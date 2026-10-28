@@ -2,7 +2,9 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Tabs};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs,
+};
 use ratatui_textarea::TextArea;
 
 use super::app::{App, Focus, RequestTab, Tab};
@@ -68,6 +70,12 @@ fn right_areas(right: Rect) -> (Rect, Rect, Rect) {
 fn main_area(area: Rect) -> (Rect, Rect) {
     let [main, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
     (main, status)
+}
+
+/// The big reading panel: the whole main area with a small margin.
+pub fn modal_area(area: Rect) -> Rect {
+    let (main, _) = main_area(area);
+    main.inner(Margin::new(2, 1))
 }
 
 pub fn areas(area: Rect) -> Areas {
@@ -170,6 +178,44 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_center(frame, app, &view.request, view.previewing, center);
     draw_right(frame, app, view.outcome, right);
     draw_status(frame, app, status);
+    if let Some(modal) = &app.modal {
+        draw_modal(frame, modal, frame.area());
+    }
+}
+
+// ---- reading panel ----------------------------------------------------------
+
+fn draw_modal(frame: &mut Frame, modal: &super::modal::Modal, screen: Rect) {
+    let area = modal_area(screen);
+    frame.render_widget(Clear, area);
+    let view = if modal.is_formatted() {
+        "formatted"
+    } else {
+        "as received"
+    };
+    let title = Line::from(vec![
+        Span::styled(
+            format!(" Response body - {} ({view}) ", modal.kind().label()),
+            Style::new().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "| F format | j/k PgUp/PgDn scroll | y copy | Esc close ",
+            Style::new().fg(Color::DarkGray),
+        ),
+    ]);
+    let outer = block_titled(title, true);
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    modal.with_lines(inner.width as usize, |lines| {
+        modal.set_viewport(lines.len(), inner.height as usize);
+        let start = modal.scroll.min(lines.len());
+        let end = (start + inner.height as usize).min(lines.len());
+        frame.render_widget(Paragraph::new(lines[start..end].to_vec()), inner);
+    });
 }
 
 fn block(title: &str, focused: bool) -> Block<'static> {
@@ -469,7 +515,7 @@ fn draw_right(frame: &mut Frame, app: &App, outcome: Option<&Outcome>, area: Rec
     };
     frame.render_widget(Paragraph::new(header_lines), headers_inner);
 
-    let body_block = block("Body (PgUp/PgDn)", false);
+    let body_block = block("Body (Enter: open)", app.focus == Focus::Response);
     let body_inner = body_block.inner(body_area);
     frame.render_widget(body_block, body_area);
     let body_lines: Vec<Line> = match outcome {
@@ -495,7 +541,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             Style::new().fg(Color::Green),
         ),
         None => Line::styled(
-            "Tab focus | [ ] tabs | j/k move | Enter load | Ctrl+S send | Ctrl+N/P method | Ctrl+T body/headers | y copy response | PgUp/PgDn scroll | q quit",
+            "Tab focus | [ ] tabs | j/k move | Enter load | Ctrl+S send | Ctrl+N/P method | Ctrl+T body/headers | Enter open response | y copy response | PgUp/PgDn scroll | q quit",
             Style::new().fg(Color::DarkGray),
         ),
     };

@@ -1,6 +1,8 @@
 mod app;
 pub mod headers;
+pub mod html;
 pub mod json;
+pub mod modal;
 mod terminal;
 pub mod ui;
 

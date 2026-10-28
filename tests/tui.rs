@@ -379,15 +379,21 @@ async fn clicking_history_selects_then_second_click_loads() {
 }
 
 #[tokio::test]
-async fn clicking_empty_list_space_or_response_panel_changes_nothing() {
+async fn clicking_empty_list_space_changes_nothing_and_the_response_box_takes_focus() {
     let mut h = with_two_history_entries().await;
     let a = ui::areas(SCREEN);
     click(&mut h.app, a.list.x + 1, a.list.y + 10); // below the two rows
-    click(&mut h.app, a.response_body.x + 1, a.response_body.y + 1);
     assert_eq!(
         (h.app.history_sel, h.app.focus, h.app.tab),
         (0, Focus::List, Tab::History)
     );
+
+    click(&mut h.app, a.response_body.x + 1, a.response_body.y + 1);
+    assert_eq!(
+        (h.app.history_sel, h.app.focus, h.app.tab),
+        (0, Focus::Response, Tab::History)
+    );
+    assert!(h.app.modal.is_none(), "one click only focuses");
 }
 
 #[tokio::test]
@@ -671,7 +677,11 @@ async fn focus_cycle_follows_the_active_tab() {
     h.app.handle_key(key(KeyCode::Tab));
     assert_eq!(h.app.focus, Focus::Headers);
     h.app.handle_key(key(KeyCode::Tab));
+    assert_eq!(h.app.focus, Focus::Response);
+    h.app.handle_key(key(KeyCode::Tab));
     assert_eq!(h.app.focus, Focus::List);
+    h.app.handle_key(key(KeyCode::BackTab));
+    assert_eq!(h.app.focus, Focus::Response);
     h.app.handle_key(key(KeyCode::BackTab));
     assert_eq!(h.app.focus, Focus::Headers);
 }
@@ -839,4 +849,284 @@ async fn clicking_a_tab_title_while_previewing_loads_the_entry_first() {
     click(&mut h.app, a.body.x + 1 + 8, a.body.y);
     assert_eq!(h.app.editor_request().url, "http://x/second");
     assert_eq!(h.app.request_tab, RequestTab::Headers);
+}
+
+// ---- reading panel (modal) -----------------------------------------------------
+
+async fn with_response(body: &str) -> Harness {
+    let mut h = harness_with(
+        Ok(Response {
+            status: 200,
+            headers: vec![],
+            body: body.into(),
+            elapsed: Duration::from_millis(1),
+        }),
+        None,
+    )
+    .await;
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "http://x/r");
+    h.app.handle_key(ctrl('s'));
+    pump(&mut h, |a| a.live.is_some() && !a.history.is_empty()).await;
+    h
+}
+
+fn focus_response(app: &mut App) {
+    app.handle_key(key(KeyCode::Esc)); // list
+    for _ in 0..3 {
+        app.handle_key(key(KeyCode::Tab)); // url, body, response
+    }
+    assert_eq!(app.focus, Focus::Response);
+}
+
+#[tokio::test]
+async fn enter_on_the_focused_response_opens_the_reading_panel() {
+    let mut h = with_response("{\"x\":1}").await;
+    assert!(h.app.modal.is_none());
+    focus_response(&mut h.app);
+
+    h.app.handle_key(key(KeyCode::Enter));
+    assert!(h.app.modal.is_some());
+    let out = text(&render(&h.app, 120, 30));
+    assert!(
+        out.contains("Response body") && out.contains("JSON") && out.contains("{\"x\":1}"),
+        "{out}"
+    );
+    assert!(out.contains("as received"), "opens unformatted");
+}
+
+#[tokio::test]
+async fn f_formats_json_and_toggles_back() {
+    let mut h = with_response("{\"x\":1}").await;
+    focus_response(&mut h.app);
+    h.app.handle_key(key(KeyCode::Enter));
+
+    h.app.handle_key(key(KeyCode::Char('F')));
+    let formatted = text(&render(&h.app, 120, 30));
+    assert!(
+        formatted.contains("formatted") && formatted.contains("\"x\": 1"),
+        "{formatted}"
+    );
+    assert!(!formatted.contains("{\"x\":1}"));
+
+    h.app.handle_key(key(KeyCode::Char('f')));
+    let raw = text(&render(&h.app, 120, 30));
+    assert!(
+        raw.contains("{\"x\":1}") && raw.contains("as received"),
+        "{raw}"
+    );
+}
+
+#[tokio::test]
+async fn f_formats_html() {
+    let mut h = with_response("<html><body><p>hi</p></body></html>").await;
+    focus_response(&mut h.app);
+    h.app.handle_key(key(KeyCode::Enter));
+    h.app.handle_key(key(KeyCode::Char('F')));
+    let out = text(&render(&h.app, 120, 30));
+    assert!(out.contains("HTML"), "{out}");
+    assert_eq!(
+        h.app.modal.as_ref().unwrap().displayed(),
+        "<html>\n  <body>\n    <p>\n      hi\n    </p>\n  </body>\n</html>"
+    );
+}
+
+#[tokio::test]
+async fn f_on_other_text_says_there_is_nothing_to_format() {
+    let mut h = with_response("just words").await;
+    focus_response(&mut h.app);
+    h.app.handle_key(key(KeyCode::Enter));
+    h.app.handle_key(key(KeyCode::Char('F')));
+    assert!(
+        h.app
+            .notice
+            .as_deref()
+            .unwrap()
+            .contains("nothing to format")
+    );
+    assert_eq!(h.app.modal.as_ref().unwrap().displayed(), "just words");
+}
+
+#[tokio::test]
+async fn double_click_opens_and_single_click_only_focuses() {
+    let mut h = with_response("{\"x\":1}").await;
+    let a = ui::areas(SCREEN);
+    let (x, y) = (a.response_body.x + 2, a.response_body.y + 2);
+
+    click(&mut h.app, x, y);
+    assert_eq!(h.app.focus, Focus::Response);
+    assert!(h.app.modal.is_none());
+    click(&mut h.app, x, y);
+    assert!(h.app.modal.is_some());
+}
+
+#[tokio::test]
+async fn slow_clicks_are_not_a_double_click() {
+    let mut h = with_response("{\"x\":1}").await;
+    let a = ui::areas(SCREEN);
+    let (x, y) = (a.response_body.x + 2, a.response_body.y + 2);
+    click(&mut h.app, x, y);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    click(&mut h.app, x, y);
+    assert!(h.app.modal.is_none());
+}
+
+#[tokio::test]
+async fn nothing_to_open_without_a_response() {
+    let mut h = harness().await;
+    for _ in 0..3 {
+        h.app.handle_key(key(KeyCode::Tab));
+    }
+    assert_eq!(h.app.focus, Focus::Response);
+    h.app.handle_key(key(KeyCode::Enter));
+    assert!(h.app.modal.is_none());
+    assert_eq!(h.app.notice.as_deref(), Some("no response to open"));
+}
+
+#[tokio::test]
+async fn esc_and_q_close_and_the_panel_swallows_other_input() {
+    let mut h = with_response("{\"x\":1}").await;
+    focus_response(&mut h.app);
+    h.app.handle_key(key(KeyCode::Enter));
+
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "zzz");
+    assert_eq!(
+        h.app.focus,
+        Focus::Response,
+        "focus does not move behind the panel"
+    );
+    assert_eq!(
+        h.app.url_text(),
+        "http://x/r",
+        "nothing is typed behind the panel"
+    );
+    assert!(!h.app.should_quit);
+
+    h.app.handle_key(key(KeyCode::Esc));
+    assert!(h.app.modal.is_none());
+    h.app.handle_key(key(KeyCode::Enter));
+    h.app.handle_key(key(KeyCode::Char('q')));
+    assert!(h.app.modal.is_none() && !h.app.should_quit);
+
+    h.app.handle_key(key(KeyCode::Enter));
+    h.app.handle_key(ctrl('c'));
+    assert!(h.app.should_quit, "Ctrl+C still quits");
+}
+
+#[tokio::test]
+async fn long_bodies_scroll_with_keys_and_wheel() {
+    let body: String = (0..200).map(|i| format!("line {i:03}\n")).collect();
+    let mut h = with_response(&body).await;
+    focus_response(&mut h.app);
+    h.app.handle_key(key(KeyCode::Enter));
+    let _ = render(&h.app, 120, 30); // the renderer tells the panel its size
+
+    assert!(text(&render(&h.app, 120, 30)).contains("line 000"));
+    h.app.handle_key(key(KeyCode::PageDown));
+    let page = text(&render(&h.app, 120, 30));
+    assert!(
+        !page.contains("line 000") && page.contains("line 030"),
+        "{page}"
+    );
+
+    h.app.handle_key(key(KeyCode::End));
+    let end = text(&render(&h.app, 120, 30));
+    assert!(
+        end.contains("line 199") && !end.contains("line 100"),
+        "{end}"
+    );
+    h.app.handle_key(key(KeyCode::Down));
+    assert!(
+        text(&render(&h.app, 120, 30)).contains("line 199"),
+        "stops at the end"
+    );
+
+    h.app.handle_key(key(KeyCode::Home));
+    assert!(text(&render(&h.app, 120, 30)).contains("line 000"));
+    h.app
+        .handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 10), SCREEN);
+    let wheel = text(&render(&h.app, 120, 30));
+    assert!(
+        !wheel.contains("line 000") && wheel.contains("line 003"),
+        "{wheel}"
+    );
+}
+
+#[tokio::test]
+async fn long_lines_wrap_instead_of_running_off_screen() {
+    let long = format!("{{\"k\":\"{}\"}}", "ab".repeat(120));
+    let mut h = with_response(&long).await;
+    focus_response(&mut h.app);
+    h.app.handle_key(key(KeyCode::Enter));
+    let out = text(&render(&h.app, 120, 30));
+    assert!(
+        out.matches("abab").count() >= 2,
+        "wrapped over several rows: {out}"
+    );
+    assert!(out.contains("\"}"), "the end of the line is visible");
+}
+
+#[tokio::test]
+async fn y_in_the_panel_copies_what_is_shown() {
+    let mut h = with_response("{\"x\":1}").await;
+    focus_response(&mut h.app);
+    h.app.handle_key(key(KeyCode::Enter));
+    h.app.handle_key(key(KeyCode::Char('y')));
+    assert_eq!(h.app.take_clipboard().as_deref(), Some("{\"x\":1}"));
+    h.app.handle_key(key(KeyCode::Char('F')));
+    h.app.handle_key(key(KeyCode::Char('y')));
+    assert_eq!(h.app.take_clipboard().as_deref(), Some("{\n  \"x\": 1\n}"));
+}
+
+#[tokio::test]
+async fn clicking_outside_the_panel_closes_it() {
+    let mut h = with_response("{\"x\":1}").await;
+    focus_response(&mut h.app);
+    h.app.handle_key(key(KeyCode::Enter));
+    click(&mut h.app, 50, 10); // inside: stays open
+    assert!(h.app.modal.is_some());
+    click(&mut h.app, 0, 0); // outside the margin
+    assert!(h.app.modal.is_none());
+}
+
+#[tokio::test]
+async fn hovered_history_entry_can_be_opened_from_the_response_box() {
+    let mut h = with_two_history_entries().await;
+    pump(&mut h, |a| a.view().previewing).await;
+    h.app.handle_key(key(KeyCode::Char('j'))); // the older entry: JSON response
+    pump(&mut h, |a| a.view().request.url == "http://x/first").await;
+
+    let a = ui::areas(SCREEN);
+    let (x, y) = (a.response_body.x + 2, a.response_body.y + 2);
+    click(&mut h.app, x, y);
+    assert_eq!(h.app.focus, Focus::Response);
+    assert!(h.app.view().previewing, "the hovered entry stays on screen");
+    assert_eq!(h.app.view().request.url, "http://x/first");
+
+    click(&mut h.app, x, y);
+    assert_eq!(h.app.modal.as_ref().unwrap().displayed(), "{\"x\":1}");
+    assert!(h.fake.requests().is_empty());
+}
+
+#[tokio::test]
+async fn error_messages_open_too() {
+    let mut h = with_two_history_entries().await;
+    pump(&mut h, |a| a.view().previewing).await; // newest = error "boom"
+    h.app.handle_key(key(KeyCode::Tab)); // url ... the preview is replaced by the editor
+    h.app.handle_key(key(KeyCode::Esc));
+    h.app.handle_key(key(KeyCode::Tab));
+    h.app.handle_key(key(KeyCode::Tab));
+    h.app.handle_key(key(KeyCode::Tab));
+    assert_eq!(h.app.focus, Focus::Response);
+    // from the editor the live response (none yet) is shown, so nothing opens
+    h.app.handle_key(key(KeyCode::Enter));
+    assert!(h.app.modal.is_none());
+
+    h.app.handle_key(key(KeyCode::Esc));
+    let a = ui::areas(SCREEN);
+    let (x, y) = (a.response_body.x + 2, a.response_body.y + 2);
+    click(&mut h.app, x, y);
+    click(&mut h.app, x, y);
+    assert_eq!(h.app.modal.as_ref().unwrap().displayed(), "boom");
 }

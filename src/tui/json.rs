@@ -87,6 +87,16 @@ pub fn tokens(line: &str) -> Vec<(Kind, String)> {
     out
 }
 
+/// The body re-indented, when it is a JSON object or array.
+pub fn try_pretty(body: &str) -> Option<String> {
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(v @ (serde_json::Value::Object(_) | serde_json::Value::Array(_))) => {
+            serde_json::to_string_pretty(&v).ok()
+        }
+        _ => None,
+    }
+}
+
 /// Pretty-prints JSON bodies; anything else is returned verbatim.
 pub fn pretty(body: &str) -> String {
     serde_json::from_str::<serde_json::Value>(body)

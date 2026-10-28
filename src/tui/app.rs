@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -9,10 +10,14 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::headers;
 use super::json::pretty;
+use super::modal::Modal;
 use super::ui;
 use crate::client::{Header, Method, Request, SharedClient};
 use crate::history::{History, HistoryEntry, Outcome, Summary};
 use crate::project::{Loaded, Template};
+
+/// Two clicks on the response body closer together than this open it.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// How many history rows the left panel keeps.
 pub const HISTORY_LIMIT: u32 = 200;
@@ -29,6 +34,8 @@ pub enum Focus {
     Url,
     Body,
     Headers,
+    /// The response body box; `Enter` opens it in the reading panel.
+    Response,
 }
 
 /// Which editor the request's lower box shows.
@@ -101,6 +108,12 @@ pub struct App {
     /// A non-error message for the status bar, cleared by the next key press.
     pub notice: Option<String>,
     clipboard: Option<String>,
+    /// The response body open in the big reading panel.
+    pub modal: Option<Modal>,
+    /// Set when the response box got focus while previewing a hovered entry, so the
+    /// panels keep showing that entry.
+    inspect_preview: bool,
+    last_response_click: Option<Instant>,
     pub scroll: u16,
     pub should_quit: bool,
     /// The list item the last click landed on; clicking it again loads it.
@@ -156,6 +169,9 @@ impl App {
             status,
             notice: None,
             clipboard: None,
+            modal: None,
+            inspect_preview: false,
+            last_response_click: None,
             scroll: 0,
             should_quit: false,
             last_click: None,
@@ -221,7 +237,7 @@ impl App {
     }
 
     pub fn view(&self) -> View<'_> {
-        if self.focus == Focus::List {
+        if self.focus == Focus::List || (self.focus == Focus::Response && self.inspect_preview) {
             match self.tab {
                 Tab::History => {
                     if let (Some(sum), Some(entry)) = (self.selected_summary(), &self.preview)
@@ -287,6 +303,9 @@ impl App {
         }
         self.notice = None;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if self.modal.is_some() {
+            return self.modal_key(key.code, ctrl);
+        }
 
         match (key.code, ctrl) {
             (KeyCode::Char('c'), true) => return self.should_quit = true,
@@ -320,6 +339,63 @@ impl App {
             Focus::Headers => {
                 self.headers.input(Input::from(key));
             }
+            Focus::Response => self.response_key(key.code),
+        }
+    }
+
+    fn response_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Enter => self.open_modal(),
+            KeyCode::Char('y') => self.copy_response(),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll = self.scroll.saturating_add(1),
+            KeyCode::Up | KeyCode::Char('k') => self.scroll = self.scroll.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    // ---- reading panel ---------------------------------------------------
+
+    /// Opens the response body shown in the right panel in the big reading panel.
+    pub fn open_modal(&mut self) {
+        let text = match self.view().outcome {
+            Some(Outcome::Response(r)) => r.body.clone(),
+            Some(Outcome::Error(message)) => message.clone(),
+            None => {
+                self.notice = Some("no response to open".into());
+                return;
+            }
+        };
+        if text.is_empty() {
+            self.notice = Some("the response body is empty".into());
+            return;
+        }
+        self.modal = Some(Modal::new(text));
+    }
+
+    fn modal_key(&mut self, code: KeyCode, ctrl: bool) {
+        let Some(modal) = self.modal.as_mut() else {
+            return;
+        };
+        match (code, ctrl) {
+            (KeyCode::Char('c'), true) => self.should_quit = true,
+            (KeyCode::Esc | KeyCode::Char('q'), _) => self.modal = None,
+            (KeyCode::Char('f' | 'F'), _) => {
+                if let Err(message) = modal.toggle_format() {
+                    self.notice = Some(message);
+                }
+            }
+            (KeyCode::Char('y'), _) => {
+                let text = modal.displayed().to_owned();
+                self.notice = Some(format!("copied {} bytes to the clipboard", text.len()));
+                self.clipboard = Some(text);
+            }
+            (KeyCode::Down | KeyCode::Char('j'), _) => modal.scroll_by(1),
+            (KeyCode::Up | KeyCode::Char('k'), _) => modal.scroll_by(-1),
+            (KeyCode::PageDown | KeyCode::Char(' '), _) => modal.scroll_page(1),
+            (KeyCode::PageUp | KeyCode::Char('b'), _) => modal.scroll_page(-1),
+            (KeyCode::Home | KeyCode::Char('g'), _) => modal.scroll = 0,
+            (KeyCode::End | KeyCode::Char('G'), _) => modal.scroll_to_end(),
+            _ => {}
         }
     }
 
@@ -372,6 +448,17 @@ impl App {
     pub fn handle_mouse(&mut self, event: MouseEvent, screen: Rect) {
         let areas = ui::areas(screen);
         let at = Position::new(event.column, event.row);
+        if let Some(modal) = self.modal.as_mut() {
+            match event.kind {
+                MouseEventKind::ScrollDown => modal.scroll_by(3),
+                MouseEventKind::ScrollUp => modal.scroll_by(-3),
+                MouseEventKind::Down(MouseButton::Left) if !ui::modal_area(screen).contains(at) => {
+                    self.modal = None;
+                }
+                _ => {}
+            }
+            return;
+        }
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => self.click(at, &areas),
             MouseEventKind::Down(MouseButton::Right) if areas.method.contains(at) => {
@@ -405,6 +492,18 @@ impl App {
                 let (_, col_scroll) = ui::editor_scroll(cursor_of(&self.url), inner);
                 self.url
                     .move_cursor(CursorMove::Jump(0, (at.x - inner.x) + col_scroll as u16));
+            }
+        } else if areas.response_body.contains(at) {
+            self.set_focus(Focus::Response);
+            let now = Instant::now();
+            if self
+                .last_response_click
+                .is_some_and(|t| now.duration_since(t) <= DOUBLE_CLICK)
+            {
+                self.last_response_click = None;
+                self.open_modal();
+            } else {
+                self.last_response_click = Some(now);
             }
         } else if areas.body.contains(at) {
             if let Some(tab) = ui::request_tab_at(areas.body, at, self.view().request.headers.len())
@@ -480,7 +579,7 @@ impl App {
     /// Moves focus into the editor. If the panels were previewing a hovered entry, that
     /// entry is loaded first, so clicking into a preview edits what you were looking at.
     fn focus_editor(&mut self, focus: Focus) {
-        if self.focus == Focus::List && self.view().previewing {
+        if matches!(self.focus, Focus::List | Focus::Response) && self.view().previewing {
             self.activate();
         }
         self.set_focus(focus);
@@ -494,6 +593,9 @@ impl App {
     }
 
     fn set_focus(&mut self, focus: Focus) {
+        if focus == Focus::Response && self.focus != Focus::Response {
+            self.inspect_preview = self.view().previewing;
+        }
         self.focus = focus;
         self.scroll = 0;
         self.request_preview();
@@ -622,15 +724,17 @@ fn next_focus(f: Focus, editor: Focus) -> Focus {
     match f {
         Focus::List => Focus::Url,
         Focus::Url => editor,
-        Focus::Body | Focus::Headers => Focus::List,
+        Focus::Body | Focus::Headers => Focus::Response,
+        Focus::Response => Focus::List,
     }
 }
 
 fn prev_focus(f: Focus, editor: Focus) -> Focus {
     match f {
-        Focus::List => editor,
+        Focus::List => Focus::Response,
         Focus::Url => Focus::List,
         Focus::Body | Focus::Headers => Focus::Url,
+        Focus::Response => editor,
     }
 }
 

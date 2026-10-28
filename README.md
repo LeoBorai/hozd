@@ -76,6 +76,7 @@ Content-Type = "application/json"
 | `Ctrl+S`          | Send the request                         |
 | `Ctrl+N` / `Ctrl+P` | Next / previous HTTP method            |
 | `Ctrl+T`          | Switch the request box between Body and Headers |
+| `Enter` (response focus) | Open the response body in the reading panel |
 | `PgUp` / `PgDn`   | Scroll the response body                 |
 | `y` (list focus)  | Copy the response body to the clipboard  |
 | `q` / `Ctrl+C`    | Quit                                     |
@@ -92,6 +93,7 @@ Content-Type = "application/json"
 | Wheel over the list            | Move the selection                                  |
 | Wheel over the response body   | Scroll                                              |
 | Right-click the response body  | Copy it to the clipboard                            |
+| Click / double-click the response body | Focus it / open the reading panel           |
 
 Clicking the editor while previewing an entry loads that entry first, so you edit what
 you were looking at.
@@ -129,6 +131,24 @@ just db-prepare        # refresh the committed .sqlx/ query metadata
 SQL queries are checked at compile time. Builds use the committed `.sqlx/` metadata
 (`SQLX_OFFLINE=true`); after changing a query or a migration run `just db-prepare` and
 commit `.sqlx/`. Never edit a released migration: add a new one.
+
+### Reading a response
+
+`Tab` to the response body (or click it) and press `Enter`, or double-click it, to open
+the body in a large panel. It opens as received; wrapped lines keep their colors.
+
+| Key               | Action                                           |
+| ----------------- | ------------------------------------------------ |
+| `F`               | Format JSON or HTML; press again for the original |
+| `j` `k` / arrows  | Scroll a line                                    |
+| `PgUp` `PgDn` / `b` `Space` | Scroll a page                          |
+| `g` `G` / `Home` `End` | Top / bottom                                |
+| `y`               | Copy the text as shown (formatted if formatted)  |
+| `Esc` / `q`       | Close (or click outside the panel)               |
+
+JSON is re-indented. HTML gets one tag or text node per line, indented by nesting;
+`<script>` and `<style>` keep their relative indentation and `<pre>`/`<textarea>` are left
+untouched. Other content types are shown as is, and `F` says there is nothing to format.
 
 ### Copying
 
