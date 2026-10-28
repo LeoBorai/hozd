@@ -27,6 +27,10 @@ deps-update:
 run *args:
     cargo run -- {{args}}
 
+# Builds the crate from its packaged tarball, as `cargo publish` verifies it
+package:
+    cargo package --locked --allow-dirty
+
 # Unit and integration tests
 test:
     cargo nextest run --workspace --no-tests=pass

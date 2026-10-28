@@ -37,6 +37,9 @@ jobs:
         run: cargo nextest run --workspace --no-tests=pass
       - name: Doctests
         run: cargo test --workspace --doc
+      - name: Package builds from its own tarball (what `cargo publish` verifies)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo package --locked
       - name: SQLx offline metadata is current
         if: matrix.os == 'ubuntu-latest'
         env:
