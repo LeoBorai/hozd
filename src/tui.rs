@@ -14,7 +14,7 @@ pub use terminal::{RestoreGuard, osc52};
 /// Runs the TUI until the user quits. State changes only happen in this loop; requests
 /// run in spawned tasks and report back through `rx`, so the UI never blocks on them.
 pub async fn run(mut app: App, mut rx: UnboundedReceiver<Msg>) -> std::io::Result<()> {
-    let mut terminal = ratatui::init();
+    let mut terminal = ratatui::try_init()?;
     crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
     // `ratatui::init` restores the terminal on panic but knows nothing about the mouse.
     let panic_hook = std::panic::take_hook();

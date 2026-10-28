@@ -21,7 +21,9 @@ pub mod tui;
 pub async fn run() -> anyhow::Result<()> {
     let home = Home::resolve()?;
     let (app, rx) = startup(&home).await?;
-    tui::run(app, rx).await.context("terminal error")
+    tui::run(app, rx)
+        .await
+        .context("cannot start the terminal UI; hozd needs an interactive terminal")
 }
 
 /// Everything that must succeed before the UI starts: home directory, config,

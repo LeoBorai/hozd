@@ -29,6 +29,9 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,sqlx-cli
+      - name: Install script is valid POSIX sh
+        if: matrix.os == 'ubuntu-latest'
+        run: sh -n install.sh
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy

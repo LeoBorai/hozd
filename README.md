@@ -17,6 +17,21 @@ Built on [reqwest](https://docs.rs/reqwest) and [ratatui](https://ratatui.rs).
 - **Center**: HTTP method, URL and a JSON body editor with syntax highlighting.
 - **Right**: response status, headers and body.
 
+## Install
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/LeoBorai/hozd/main/install.sh | sh
+```
+
+Installs the latest release for Linux (glibc) or macOS, x86_64 or aarch64, into
+`~/.local/bin`, after checking its SHA-256. Options, as environment variables:
+
+- `HOZD_VERSION`: a release tag such as `v0.1.0` (default: the latest)
+- `HOZD_INSTALL_DIR`: where to put the binary (default: `~/.local/bin`)
+
+On Windows download the `.zip` from the releases page. Elsewhere (for example Alpine),
+build from source: `cargo install --git https://github.com/LeoBorai/hozd hozd`.
+
 ## Data: `~/.hozd`
 
 Override the location with `HOZD_HOME`.
