@@ -105,3 +105,29 @@ async fn connection_refused_is_an_error() {
         .unwrap_err();
     assert!(matches!(err, ClientError::Transport(_)), "{err:?}");
 }
+
+/// A server that answers with something other than HTTP/1.x (here a TLS alert, which is
+/// what an HTTPS port sends back to a plain `http://` request).
+#[tokio::test]
+async fn non_http_reply_explains_the_likely_cause() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = socket.read(&mut buf).await;
+        let _ = socket.write_all(b"\x15\x03\x01\x00\x02\x02\x46").await;
+    });
+
+    let err = HttpClient::new()
+        .send(&req(Method::Get, format!("http://{addr}/")))
+        .await
+        .unwrap_err();
+    let ClientError::Transport(msg) = err else {
+        panic!("expected transport error");
+    };
+    assert!(msg.contains("invalid HTTP version"), "{msg}");
+    assert!(msg.contains("try https://"), "{msg}");
+}

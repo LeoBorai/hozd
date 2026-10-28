@@ -70,6 +70,9 @@ impl Client for HttpClient {
     }
 }
 
+const NOT_HTTP_HINT: &str = "the server did not answer with HTTP/1.x. Likely causes: an HTTPS port \
+called with http:// (try https://), or a service that is not plain HTTP";
+
 /// `reqwest` hides the root cause in the source chain; surface it.
 fn describe(err: &reqwest::Error) -> String {
     let mut msg = err.to_string();
@@ -78,6 +81,9 @@ fn describe(err: &reqwest::Error) -> String {
         msg.push_str(": ");
         msg.push_str(&s.to_string());
         source = s.source();
+    }
+    if msg.contains("invalid HTTP version") {
+        msg.push_str(&format!(" ({NOT_HTTP_HINT})"));
     }
     msg
 }
