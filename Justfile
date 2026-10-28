@@ -2,10 +2,6 @@ default:
     @echo "No default task specified."
     just --list
 
-# Dependency check, as CI runs it: warnings are errors (needs cargo-deny)
-deny:
-    cargo deny check -D warnings
-
 # Runs the Development Kit Container
 dkc:
     docker pull ghcr.io/leoborai/dkc:latest
@@ -14,25 +10,34 @@ dkc:
         -w /app \
         ghcr.io/leoborai/dkc:latest
 
-
 fmt:
     cargo clippy --fix --workspace --allow-dirty --allow-staged
     cargo fmt
 
-# Runs the SwiftUI app (macOS with the Xcode command line tools)
-dev-macos:
-    cargo build -p sealpdf-ffi
-    swift run --package-path src/macos -Xlinker -L{{justfile_directory()}}/target/debug
+# Dependency check, as CI runs it: advisories, licenses, bans, sources; warnings are errors (needs cargo-deny)
+deny:
+    cargo deny check -D warnings
 
-# Release build of the macOS app: the Rust library, then the Swift executable linked to it
-build-macos:
-    cargo build --release -p sealpdf-ffi
-    swift build -c release --package-path src/macos -Xlinker -L{{justfile_directory()}}/target/release
+# Updates Cargo.lock to the latest compatible versions, then checks them (needs cargo-deny)
+deps-update:
+    cargo update
+    cargo deny check -D warnings
 
-# Bundle the app into a standalone target/macos/SealPDF.app (macOS only, see src/macos/Scripts/bundle.sh)
-bundle-macos: build-macos
-    src/macos/Scripts/bundle.sh
+# Runs hozd
+run *args:
+    cargo run -- {{args}}
 
 # Unit and integration tests
 test:
     cargo nextest run --workspace --no-tests=pass
+
+# Creates a new SQL migration in migrations/ (needs sqlx-cli). Applied migrations are append-only: never edit them
+db-new-migration name:
+    sqlx migrate add --sequential {{name}}
+
+# Regenerates the committed .sqlx/ offline query metadata (needs sqlx-cli). Run after changing queries or migrations
+db-prepare:
+    rm -f target/sqlx-prepare.sqlite3
+    DATABASE_URL=sqlite://target/sqlx-prepare.sqlite3 sqlx database create
+    DATABASE_URL=sqlite://target/sqlx-prepare.sqlite3 sqlx migrate run
+    DATABASE_URL=sqlite://target/sqlx-prepare.sqlite3 cargo sqlx prepare -- --all-targets

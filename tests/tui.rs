@@ -1,0 +1,332 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use hozd::client::{FakeClient, Header, Method, Request, Response};
+use hozd::history::{History, Outcome};
+use hozd::project::load_projects;
+use hozd::tui::{App, Focus, Msg, Tab, ui};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Color;
+use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+
+struct Harness {
+    app: App,
+    rx: UnboundedReceiver<Msg>,
+    fake: Arc<FakeClient>,
+    store: History,
+    _tmp: tempfile::TempDir,
+}
+
+fn ok_response() -> Response {
+    Response {
+        status: 200,
+        headers: vec![Header::new("x-h", "1")],
+        body: "{\"x\":1}".into(),
+        elapsed: Duration::from_millis(7),
+    }
+}
+
+async fn harness_with(
+    reply: Result<Response, hozd::client::ClientError>,
+    projects: Option<&str>,
+) -> Harness {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = History::open(&tmp.path().join("db.sqlite3")).await.unwrap();
+    let fake = Arc::new(FakeClient::new(reply));
+    let (tx, rx) = unbounded_channel();
+    let loaded = projects
+        .map(|_| load_projects(&tmp.path().join("projects")))
+        .unwrap_or_default();
+    let app = App::new(fake.clone(), store.clone(), loaded, tx);
+    Harness {
+        app,
+        rx,
+        fake,
+        store,
+        _tmp: tmp,
+    }
+}
+
+async fn harness() -> Harness {
+    harness_with(Ok(ok_response()), None).await
+}
+
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+fn ctrl(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+}
+
+fn type_text(app: &mut App, text: &str) {
+    for c in text.chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+}
+
+/// Applies background messages until `done` holds.
+async fn pump(h: &mut Harness, done: impl Fn(&App) -> bool) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !done(&h.app) {
+            let msg = h.rx.recv().await.expect("channel open");
+            h.app.update(msg);
+        }
+    })
+    .await
+    .expect("timed out waiting for app state");
+}
+
+fn render(app: &App, w: u16, h: u16) -> Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+    terminal.draw(|f| ui::draw(f, app)).unwrap();
+    terminal.backend().buffer().clone()
+}
+
+fn text(buf: &Buffer) -> String {
+    let w = buf.area.width as usize;
+    buf.content()
+        .chunks(w)
+        .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// ---- layout ------------------------------------------------------------
+
+#[test]
+fn panels_are_3_6_3_of_12_columns() {
+    let [l, c, r] = ui::panel_areas(Rect::new(0, 0, 120, 29));
+    assert_eq!((l.width, c.width, r.width), (30, 60, 30));
+    assert_eq!((l.x, c.x, r.x), (0, 30, 90));
+}
+
+#[tokio::test]
+async fn left_panel_has_both_tabs_and_empty_hints() {
+    let mut h = harness().await;
+    let out = text(&render(&h.app, 120, 30));
+    assert!(out.contains("Stored") && out.contains("History"));
+    assert!(out.contains("no templates"));
+
+    h.app.handle_key(key(KeyCode::Char(']')));
+    assert_eq!(h.app.tab, Tab::History);
+    assert!(text(&render(&h.app, 120, 30)).contains("no requests sent yet"));
+    h.app.handle_key(key(KeyCode::Char('[')));
+    assert_eq!(h.app.tab, Tab::Stored);
+}
+
+#[tokio::test]
+async fn stored_tab_groups_templates_by_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("projects/api/users");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("create.toml"),
+        "name = \"Create user\"\nmethod = \"POST\"\nurl = \"http://x/users\"\nbody = '''\n{\"n\": 1}\n'''\n",
+    )
+    .unwrap();
+    let store = History::open(&tmp.path().join("db.sqlite3")).await.unwrap();
+    let (tx, _rx) = unbounded_channel();
+    let app = App::new(
+        Arc::new(FakeClient::new(Ok(ok_response()))),
+        store,
+        load_projects(&tmp.path().join("projects")),
+        tx,
+    );
+    let out = text(&render(&app, 120, 30));
+    assert!(out.contains("api/") && out.contains("Create user"), "{out}");
+}
+
+// ---- editor ------------------------------------------------------------
+
+#[tokio::test]
+async fn building_a_request_highlights_json_body() {
+    let mut h = harness().await;
+    h.app.handle_key(ctrl('n')); // GET -> POST
+    h.app.handle_key(key(KeyCode::Tab)); // URL
+    type_text(&mut h.app, "http://x/y");
+    h.app.handle_key(key(KeyCode::Tab)); // Body
+    assert_eq!(h.app.focus, Focus::Body);
+    type_text(&mut h.app, "{\"a\": 1}");
+
+    let req = h.app.editor_request();
+    assert_eq!((req.method, req.url.as_str()), (Method::Post, "http://x/y"));
+    assert_eq!(req.body.as_deref(), Some("{\"a\": 1}"));
+
+    let buf = render(&h.app, 120, 30);
+    let styled = |sym: &str, color: Color| {
+        buf.content()
+            .iter()
+            .any(|c| c.symbol() == sym && c.fg == color)
+    };
+    assert!(styled("1", Color::Yellow), "number styled");
+    assert!(styled("a", Color::Cyan), "key styled");
+}
+
+// ---- send ----------------------------------------------------------------
+
+#[tokio::test]
+async fn send_is_non_blocking_then_records_history_and_shows_response() {
+    let mut h = harness().await;
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "http://x/y");
+    h.app.handle_key(ctrl('s'));
+    assert!(
+        h.app.sending,
+        "handle_key returned before the request finished"
+    );
+
+    pump(&mut h, |a| a.live.is_some() && !a.history.is_empty()).await;
+
+    assert!(!h.app.sending);
+    assert_eq!(h.fake.requests().len(), 1);
+    assert_eq!(h.app.history[0].url, "http://x/y");
+    let out = text(&render(&h.app, 120, 30));
+    assert!(
+        out.contains("200") && out.contains("x-h") && out.contains("\"x\": 1"),
+        "{out}"
+    );
+}
+
+#[tokio::test]
+async fn transport_error_is_shown_and_recorded() {
+    let mut h = harness_with(
+        Err(hozd::client::ClientError::Transport(
+            "connection refused".into(),
+        )),
+        None,
+    )
+    .await;
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "http://x");
+    h.app.handle_key(key(KeyCode::Enter)); // Enter in the URL field sends
+
+    pump(&mut h, |a| a.live.is_some() && !a.history.is_empty()).await;
+    // the message wraps inside the narrow right panel, so check fragments
+    let out = text(&render(&h.app, 120, 30));
+    assert!(out.contains("failed") && out.contains("refused"), "{out}");
+    assert_eq!(h.app.history[0].status, None);
+}
+
+#[tokio::test]
+async fn send_without_url_does_nothing() {
+    let mut h = harness().await;
+    h.app.handle_key(ctrl('s'));
+    assert!(!h.app.sending);
+    assert!(h.fake.requests().is_empty());
+}
+
+// ---- preview / load --------------------------------------------------------
+
+async fn with_two_history_entries() -> Harness {
+    let mut h = harness().await;
+    for (url, outcome) in [
+        ("http://x/first", Outcome::Response(ok_response())),
+        ("http://x/second", Outcome::Error("boom".into())),
+    ] {
+        let req = Request {
+            method: Method::Post,
+            url: url.into(),
+            headers: vec![],
+            body: Some("{\"k\": true}".into()),
+        };
+        h.store.record(&req, &outcome).await.unwrap();
+    }
+    h.app.refresh_history();
+    pump(&mut h, |a| a.history.len() == 2).await;
+    h.app.set_tab(Tab::History);
+    h
+}
+
+#[tokio::test]
+async fn hovering_history_previews_request_and_response_without_sending() {
+    let mut h = with_two_history_entries().await;
+
+    pump(&mut h, |a| a.view().previewing).await;
+    assert_eq!(h.app.view().request.url, "http://x/second");
+    assert!(matches!(h.app.view().outcome, Some(Outcome::Error(m)) if m == "boom"));
+
+    h.app.handle_key(key(KeyCode::Char('j')));
+    pump(&mut h, |a| a.view().request.url == "http://x/first").await;
+    assert!(matches!(h.app.view().outcome, Some(Outcome::Response(r)) if r.status == 200));
+    let out = text(&render(&h.app, 120, 30));
+    assert!(
+        out.contains("http://x/first") && out.contains("\"x\": 1"),
+        "{out}"
+    );
+
+    assert!(
+        h.fake.requests().is_empty(),
+        "hover must not execute anything"
+    );
+    assert_eq!(
+        h.store.list(10).await.unwrap().len(),
+        2,
+        "hover must not add history"
+    );
+}
+
+#[tokio::test]
+async fn enter_on_history_loads_request_into_editor() {
+    let mut h = with_two_history_entries().await;
+    pump(&mut h, |a| a.view().previewing).await;
+    h.app.handle_key(key(KeyCode::Enter));
+
+    assert_eq!(h.app.focus, Focus::Url);
+    let req = h.app.editor_request();
+    assert_eq!(
+        (req.method, req.url.as_str()),
+        (Method::Post, "http://x/second")
+    );
+    assert_eq!(req.body.as_deref(), Some("{\"k\": true}"));
+    assert!(h.fake.requests().is_empty());
+}
+
+#[tokio::test]
+async fn enter_on_stored_template_loads_it_ready_to_send() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("projects/api");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("t.toml"),
+        "name = \"T\"\nmethod = \"PUT\"\nurl = \"http://x/t\"\nbody = '''\n{\"a\": 1}\n'''\n\n[headers]\nX-A = \"b\"\n",
+    )
+    .unwrap();
+    let store = History::open(&tmp.path().join("db.sqlite3")).await.unwrap();
+    let (tx, _rx) = unbounded_channel();
+    let mut app = App::new(
+        Arc::new(FakeClient::new(Ok(ok_response()))),
+        store,
+        load_projects(&tmp.path().join("projects")),
+        tx,
+    );
+
+    // hovering previews the template in the center panel
+    assert_eq!(app.view().request.url, "http://x/t");
+    assert!(app.view().previewing);
+
+    app.handle_key(key(KeyCode::Enter));
+    let req = app.editor_request();
+    assert_eq!((req.method, req.url.as_str()), (Method::Put, "http://x/t"));
+    assert_eq!(req.headers, vec![Header::new("X-A", "b")]);
+    assert!(req.body.unwrap().contains("\"a\": 1"));
+    assert!(!app.view().previewing);
+}
+
+#[tokio::test]
+async fn quit_keys() {
+    let mut h = harness().await;
+    h.app.handle_key(key(KeyCode::Tab));
+    h.app.handle_key(key(KeyCode::Char('q'))); // typed into the URL, not a quit
+    assert!(!h.app.should_quit);
+    h.app.handle_key(ctrl('c'));
+    assert!(h.app.should_quit);
+
+    let mut h = harness().await;
+    h.app.handle_key(key(KeyCode::Char('q')));
+    assert!(h.app.should_quit);
+}

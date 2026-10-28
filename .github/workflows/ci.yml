@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # new advisories appear without any change to this repo
+    - cron: "0 6 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: "true"
+
+jobs:
+  check:
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,sqlx-cli
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo nextest run --workspace --no-tests=pass
+      - name: Doctests
+        run: cargo test --workspace --doc
+      - name: SQLx offline metadata is current
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          SQLX_OFFLINE: "false"
+          DATABASE_URL: sqlite://target/ci.sqlite3
+        run: |
+          sqlx database create
+          sqlx migrate run
+          cargo sqlx prepare --check -- --all-targets
+
+  deny:
+    name: Dependencies (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Advisories, licenses, bans, sources
+        run: cargo deny check -D warnings

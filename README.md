@@ -1,0 +1,85 @@
+# hozd
+
+A terminal HTTP client in the spirit of cURL, with a lazygit/lazydocker-style TUI.
+Built on [reqwest](https://docs.rs/reqwest) and [ratatui](https://ratatui.rs).
+
+```
++-----------+-----------------------------+-----------+
+| Stored    |  [Method] [URL ............]  | Response  |
+| History   |  Body (JSON)                 | Headers   |
+|  requests |  { "name": "ada" }           | Body      |
++-----------+-----------------------------+-----------+
+     3                    6                      3
+```
+
+- **Left**: `Stored` templates and `History`. Moving over an entry previews it: the center
+  panel shows its request, the right panel its response (history only). Nothing is sent.
+- **Center**: HTTP method, URL and a JSON body editor with syntax highlighting.
+- **Right**: response status, headers and body.
+
+## Data: `~/.hozd`
+
+Override the location with `HOZD_HOME`.
+
+```
+~/.hozd/
+  config.toml          optional settings
+  db.sqlite3           request history (SQLite, migrated automatically on startup)
+  projects/<name>/**/*.toml   request templates
+```
+
+A database written by a newer hozd is refused with a message to upgrade; hozd never
+modifies it.
+
+### Templates
+
+One request per `.toml` file, anywhere under `projects/<name>/`. `body` must come
+before any `[table]`:
+
+```toml
+name = "Create user"
+method = "POST"
+url = "https://api.example.com/users"
+body = '''
+{ "name": "ada" }
+'''
+
+[headers]
+Content-Type = "application/json"
+```
+
+## Keys
+
+| Key               | Action                                   |
+| ----------------- | ---------------------------------------- |
+| `Tab` / `S-Tab`   | Cycle focus: list, URL, body             |
+| `Esc`             | Back to the list                         |
+| `[` `]` / `h` `l` | Switch Stored / History tab (list)       |
+| `j` `k` / arrows  | Move selection (list)                    |
+| `Enter`           | Load the selected entry into the editor (list); send (URL field) |
+| `Ctrl+S`          | Send the request                         |
+| `Ctrl+N` / `Ctrl+P` | Next / previous HTTP method            |
+| `PgUp` / `PgDn`   | Scroll the response body                 |
+| `q` / `Ctrl+C`    | Quit                                     |
+
+Headers of a loaded template or history entry are carried along and sent, but cannot be
+edited in the TUI yet.
+
+## Development
+
+Needs Rust (edition 2024), [`cargo-nextest`](https://nexte.st), [`sqlx-cli`](https://crates.io/crates/sqlx-cli)
+[`cargo-deny`](https://crates.io/crates/cargo-deny) and [`just`](https://just.systems).
+
+```sh
+just test              # cargo nextest run
+just fmt               # clippy --fix + rustfmt
+just run               # run hozd
+just deny              # cargo-deny: advisories, licenses, bans, sources
+just deps-update       # cargo update, then cargo deny
+just db-new-migration add_something   # new numbered migration in migrations/
+just db-prepare        # refresh the committed .sqlx/ query metadata
+```
+
+SQL queries are checked at compile time. Builds use the committed `.sqlx/` metadata
+(`SQLX_OFFLINE=true`); after changing a query or a migration run `just db-prepare` and
+commit `.sqlx/`. Never edit a released migration: add a new one.
