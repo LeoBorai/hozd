@@ -145,11 +145,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn block(title: &str, focused: bool) -> Block<'static> {
-    let color = if focused {
-        Color::Green
-    } else {
-        Color::DarkGray
-    };
+    let color = if focused { Color::Green } else { Color::Gray };
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
