@@ -1,4 +1,5 @@
 mod app;
+pub mod headers;
 pub mod json;
 mod terminal;
 pub mod ui;
@@ -8,7 +9,7 @@ use futures_util::StreamExt;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-pub use app::{App, Focus, HISTORY_LIMIT, Msg, RequestView, StoredTemplate, Tab, View};
+pub use app::{App, Focus, HISTORY_LIMIT, Msg, RequestTab, RequestView, StoredTemplate, Tab, View};
 pub use terminal::{RestoreGuard, osc52};
 
 /// Runs the TUI until the user quits. State changes only happen in this loop; requests

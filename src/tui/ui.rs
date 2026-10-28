@@ -5,7 +5,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Tabs};
 use ratatui_textarea::TextArea;
 
-use super::app::{App, Focus, Tab};
+use super::app::{App, Focus, RequestTab, Tab};
+use super::headers;
 use super::json::{highlight_line, pretty};
 use crate::client::Method;
 use crate::history::Outcome;
@@ -121,6 +122,33 @@ pub fn stored_row_map(app: &App) -> Vec<Option<usize>> {
     rows
 }
 
+/// Titles of the request's lower box: `" Body "` and `" Headers (n) "`, joined by `|`.
+fn request_tab_labels(header_count: usize) -> (String, String) {
+    let headers = if header_count == 0 {
+        " Headers ".to_owned()
+    } else {
+        format!(" Headers ({header_count}) ")
+    };
+    (" Body ".to_owned(), headers)
+}
+
+/// Which request tab title is under `at`; titles sit on the box's top border, starting
+/// one column in. `header_count` must be the count shown in the title.
+pub fn request_tab_at(body: Rect, at: Position, header_count: usize) -> Option<RequestTab> {
+    if at.y != body.y {
+        return None;
+    }
+    let offset = at.x.checked_sub(body.x + 1)? as usize;
+    let (body_label, headers_label) = request_tab_labels(header_count);
+    let divider = body_label.len();
+    match offset {
+        o if o < divider => Some(RequestTab::Body),
+        o if o == divider => None,
+        o if o <= divider + headers_label.len() => Some(RequestTab::Headers),
+        _ => None,
+    }
+}
+
 /// Scroll offsets (rows, columns) that keep the cursor inside `area`.
 pub fn editor_scroll(cursor: (usize, usize), area: Rect) -> (usize, usize) {
     (
@@ -145,12 +173,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn block(title: &str, focused: bool) -> Block<'static> {
+    block_titled(Line::raw(format!(" {title} ")), focused)
+}
+
+fn block_titled(title: Line<'static>, focused: bool) -> Block<'static> {
     let color = if focused { Color::Green } else { Color::Gray };
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(color))
-        .title(format!(" {title} "))
+        .title(title)
 }
 
 // ---- left ----------------------------------------------------------------
@@ -298,28 +330,77 @@ fn draw_center(
     if previewing {
         frame.render_widget(Paragraph::new(request.url.clone()), url_inner);
     } else {
-        render_editor(frame, &app.url, url_inner, app.focus == Focus::Url, false);
+        render_editor(
+            frame,
+            &app.url,
+            url_inner,
+            app.focus == Focus::Url,
+            Syntax::Plain,
+        );
     }
 
-    let headers = if request.headers.is_empty() {
-        String::new()
-    } else {
-        format!(" - {} header(s)", request.headers.len())
+    let lower_focused = matches!(app.focus, Focus::Body | Focus::Headers);
+    let (body_label, headers_label) = request_tab_labels(request.headers.len());
+    let active = Style::new()
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        .fg(Color::Yellow);
+    let (body_style, headers_style) = match app.request_tab {
+        RequestTab::Body => (active, Style::new()),
+        RequestTab::Headers => (Style::new(), active),
     };
-    let body_block = block(&format!("Body (JSON){headers}"), app.focus == Focus::Body);
+    let title = Line::from(vec![
+        Span::styled(body_label, body_style),
+        Span::raw("|"),
+        Span::styled(headers_label, headers_style),
+    ]);
+    let body_block = block_titled(title, lower_focused);
     let body_inner = body_block.inner(body_area);
     frame.render_widget(body_block, body_area);
-    if previewing {
-        let lines: Vec<Line> = request.body.lines().map(highlight_line).collect();
-        frame.render_widget(Paragraph::new(lines), body_inner);
-    } else {
-        render_editor(frame, &app.body, body_inner, app.focus == Focus::Body, true);
+    match (app.request_tab, previewing) {
+        (RequestTab::Body, true) => {
+            let lines: Vec<Line> = request.body.lines().map(highlight_line).collect();
+            frame.render_widget(Paragraph::new(lines), body_inner);
+        }
+        (RequestTab::Headers, true) => {
+            let lines: Vec<Line> = headers::to_lines(&request.headers)
+                .iter()
+                .map(|l| headers::highlight_line(l))
+                .collect();
+            frame.render_widget(Paragraph::new(lines), body_inner);
+        }
+        (RequestTab::Body, false) => render_editor(
+            frame,
+            &app.body,
+            body_inner,
+            app.focus == Focus::Body,
+            Syntax::Json,
+        ),
+        (RequestTab::Headers, false) => render_editor(
+            frame,
+            &app.headers,
+            body_inner,
+            app.focus == Focus::Headers,
+            Syntax::Headers,
+        ),
     }
+}
+
+#[derive(Clone, Copy)]
+enum Syntax {
+    Plain,
+    Json,
+    Headers,
 }
 
 /// Draws a `TextArea`'s lines ourselves (it has no syntax-highlight hook) and places
 /// the terminal cursor when the editor has focus.
-fn render_editor(frame: &mut Frame, ta: &TextArea<'static>, area: Rect, focused: bool, json: bool) {
+fn render_editor(
+    frame: &mut Frame,
+    ta: &TextArea<'static>,
+    area: Rect,
+    focused: bool,
+    syntax: Syntax,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -330,12 +411,10 @@ fn render_editor(frame: &mut Frame, ta: &TextArea<'static>, area: Rect, focused:
     let lines: Vec<Line> = ta
         .lines()
         .iter()
-        .map(|l| {
-            if json {
-                highlight_line(l)
-            } else {
-                Line::raw(l.clone())
-            }
+        .map(|l| match syntax {
+            Syntax::Json => highlight_line(l),
+            Syntax::Headers => headers::highlight_line(l),
+            Syntax::Plain => Line::raw(l.clone()),
         })
         .collect();
     frame.render_widget(
@@ -416,7 +495,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             Style::new().fg(Color::Green),
         ),
         None => Line::styled(
-            "Tab focus | [ ] tabs | j/k move | Enter load | Ctrl+S send | Ctrl+N/P method | y copy response | PgUp/PgDn scroll | q quit",
+            "Tab focus | [ ] tabs | j/k move | Enter load | Ctrl+S send | Ctrl+N/P method | Ctrl+T body/headers | y copy response | PgUp/PgDn scroll | q quit",
             Style::new().fg(Color::DarkGray),
         ),
     };

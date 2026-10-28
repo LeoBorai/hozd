@@ -627,3 +627,216 @@ async fn y_in_the_editor_types_a_y() {
     assert_eq!(h.app.url_text(), "y");
     assert!(h.app.take_clipboard().is_none());
 }
+
+// ---- headers tab -------------------------------------------------------------
+
+use hozd::tui::RequestTab;
+
+fn header_lines(app: &App) -> Vec<String> {
+    hozd::tui::headers::to_lines(&app.editor_request().headers)
+}
+
+#[tokio::test]
+async fn ctrl_t_toggles_between_body_and_headers() {
+    let mut h = harness().await;
+    assert_eq!(h.app.request_tab, RequestTab::Body);
+    h.app.handle_key(key(KeyCode::Tab));
+    h.app.handle_key(key(KeyCode::Tab));
+    assert_eq!(h.app.focus, Focus::Body);
+
+    h.app.handle_key(ctrl('t'));
+    assert_eq!(
+        (h.app.request_tab, h.app.focus),
+        (RequestTab::Headers, Focus::Headers)
+    );
+    let out = text(&render(&h.app, 120, 30));
+    assert!(out.contains("Body") && out.contains("Headers"), "{out}");
+
+    h.app.handle_key(ctrl('t'));
+    assert_eq!(
+        (h.app.request_tab, h.app.focus),
+        (RequestTab::Body, Focus::Body)
+    );
+}
+
+#[tokio::test]
+async fn focus_cycle_follows_the_active_tab() {
+    let mut h = harness().await;
+    h.app.handle_key(ctrl('t')); // from the list: tab changes, focus stays
+    assert_eq!(
+        (h.app.request_tab, h.app.focus),
+        (RequestTab::Headers, Focus::List)
+    );
+    h.app.handle_key(key(KeyCode::Tab));
+    h.app.handle_key(key(KeyCode::Tab));
+    assert_eq!(h.app.focus, Focus::Headers);
+    h.app.handle_key(key(KeyCode::Tab));
+    assert_eq!(h.app.focus, Focus::List);
+    h.app.handle_key(key(KeyCode::BackTab));
+    assert_eq!(h.app.focus, Focus::Headers);
+}
+
+#[tokio::test]
+async fn add_headers_by_typing_and_they_are_sent_and_recorded() {
+    let mut h = harness().await;
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "http://x/h");
+    h.app.handle_key(key(KeyCode::Tab));
+    h.app.handle_key(ctrl('t'));
+    type_text(&mut h.app, "X-A: 1");
+    h.app.handle_key(key(KeyCode::Enter)); // a new line appends another header
+    type_text(&mut h.app, "Authorization: Bearer a:b");
+
+    assert_eq!(
+        header_lines(&h.app),
+        ["X-A: 1", "Authorization: Bearer a:b"]
+    );
+    assert!(text(&render(&h.app, 120, 30)).contains("Headers (2)"));
+
+    h.app.handle_key(ctrl('s'));
+    pump(&mut h, |a| a.live.is_some() && !a.history.is_empty()).await;
+    assert_eq!(
+        h.fake.requests()[0].headers,
+        vec![
+            Header::new("X-A", "1"),
+            Header::new("Authorization", "Bearer a:b")
+        ]
+    );
+    let id = h.app.history[0].id;
+    let entry = h.store.get(id).await.unwrap().unwrap();
+    assert_eq!(
+        entry.request.headers.len(),
+        2,
+        "headers are part of history"
+    );
+}
+
+fn request_with_headers() -> Request {
+    Request {
+        url: "http://x/t".into(),
+        headers: vec![Header::new("X-A", "1"), Header::new("X-B", "2")],
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn edit_and_remove_existing_headers() {
+    let mut h = harness().await;
+    h.app.load_request(&request_with_headers());
+    h.app.handle_key(ctrl('t'));
+    h.app.handle_key(key(KeyCode::Tab)); // list -> url
+    h.app.handle_key(key(KeyCode::Tab)); // url -> headers
+    assert_eq!(h.app.focus, Focus::Headers);
+    assert_eq!(header_lines(&h.app), ["X-A: 1", "X-B: 2"]);
+
+    // edit: change the value on the first line
+    h.app.handle_key(key(KeyCode::End));
+    h.app.handle_key(key(KeyCode::Backspace));
+    type_text(&mut h.app, "9");
+    assert_eq!(header_lines(&h.app), ["X-A: 9", "X-B: 2"]);
+
+    // remove: clear the first line (Ctrl+K deletes to the end of the line)
+    h.app.handle_key(key(KeyCode::Home));
+    h.app.handle_key(ctrl('k'));
+    assert_eq!(
+        header_lines(&h.app),
+        ["X-B: 2"],
+        "a blank line is not a header"
+    );
+    assert!(text(&render(&h.app, 120, 30)).contains("Headers (1)"));
+}
+
+#[tokio::test]
+async fn invalid_header_line_blocks_send_and_points_at_the_line() {
+    let mut h = harness().await;
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "http://x");
+    h.app.handle_key(key(KeyCode::Tab));
+    h.app.handle_key(ctrl('t'));
+    type_text(&mut h.app, "X-A: 1");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "oops");
+    h.app.handle_key(key(KeyCode::Tab)); // leave the editor
+    h.app.handle_key(key(KeyCode::Tab));
+    h.app.handle_key(ctrl('t')); // back to Body to prove the failure switches tabs
+    assert_eq!(h.app.request_tab, RequestTab::Body);
+
+    h.app.handle_key(ctrl('s'));
+    assert!(!h.app.sending);
+    assert!(h.fake.requests().is_empty());
+    assert_eq!(
+        (h.app.request_tab, h.app.focus),
+        (RequestTab::Headers, Focus::Headers)
+    );
+    let out = text(&render(&h.app, 120, 30));
+    assert!(
+        out.contains("header line 2") || out.contains("line 2"),
+        "{out}"
+    );
+}
+
+#[tokio::test]
+async fn headers_tab_previews_hovered_history_and_loads_on_enter() {
+    let mut h = harness().await;
+    h.store
+        .record(&request_with_headers(), &response_outcome())
+        .await
+        .unwrap();
+    h.app.refresh_history();
+    pump(&mut h, |a| a.history.len() == 1).await;
+    h.app.set_tab(Tab::History);
+    h.app.handle_key(ctrl('t')); // list focus: only the tab changes
+    pump(&mut h, |a| a.view().previewing).await;
+
+    let out = text(&render(&h.app, 120, 30));
+    assert!(
+        out.contains("X-A: 1") && out.contains("X-B: 2") && out.contains("Headers (2)"),
+        "{out}"
+    );
+    assert!(h.fake.requests().is_empty());
+
+    h.app.handle_key(key(KeyCode::Enter));
+    assert_eq!(header_lines(&h.app), ["X-A: 1", "X-B: 2"]);
+}
+
+#[tokio::test]
+async fn clicking_the_tab_titles_switches_tabs_and_focuses_the_editor() {
+    let mut h = harness().await;
+    let a = ui::areas(SCREEN);
+    // title row is the top border; " Body " = 6 columns after the corner, then `|`, then " Headers "
+    click(&mut h.app, a.body.x + 1 + 8, a.body.y);
+    assert_eq!(
+        (h.app.request_tab, h.app.focus),
+        (RequestTab::Headers, Focus::Headers)
+    );
+    click(&mut h.app, a.body.x + 1 + 2, a.body.y);
+    assert_eq!(
+        (h.app.request_tab, h.app.focus),
+        (RequestTab::Body, Focus::Body)
+    );
+    click(&mut h.app, a.body.x + 1 + 6, a.body.y); // the divider
+    assert_eq!(h.app.request_tab, RequestTab::Body);
+}
+
+#[tokio::test]
+async fn clicking_the_headers_editor_places_the_cursor() {
+    let mut h = harness().await;
+    h.app.load_request(&request_with_headers());
+    h.app.handle_key(ctrl('t'));
+    let a = ui::areas(SCREEN);
+    let inner = ui::inner(a.body);
+    click(&mut h.app, inner.x + 4, inner.y + 1); // line 2, after `X-B:`
+    assert_eq!(h.app.focus, Focus::Headers);
+    type_text(&mut h.app, "Z");
+    assert_eq!(h.app.headers.lines(), ["X-A: 1", "X-B:Z 2"]);
+}
+
+#[tokio::test]
+async fn clicking_a_tab_title_while_previewing_loads_the_entry_first() {
+    let mut h = with_two_history_entries().await;
+    pump(&mut h, |a| a.view().previewing).await;
+    let a = ui::areas(SCREEN);
+    click(&mut h.app, a.body.x + 1 + 8, a.body.y);
+    assert_eq!(h.app.editor_request().url, "http://x/second");
+    assert_eq!(h.app.request_tab, RequestTab::Headers);
+}

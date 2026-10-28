@@ -7,6 +7,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui_textarea::{CursorMove, Input, TextArea};
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::headers;
 use super::json::pretty;
 use super::ui;
 use crate::client::{Header, Method, Request, SharedClient};
@@ -27,6 +28,14 @@ pub enum Focus {
     List,
     Url,
     Body,
+    Headers,
+}
+
+/// Which editor the request's lower box shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestTab {
+    Body,
+    Headers,
 }
 
 /// Results of background work, applied to the state by [`App::update`].
@@ -82,8 +91,9 @@ pub struct App {
     pub method: Method,
     pub url: TextArea<'static>,
     pub body: TextArea<'static>,
-    /// Headers of the loaded template/history entry; carried along, not editable yet.
-    pub headers: Vec<Header>,
+    /// One `Name: value` per line, see [`headers`].
+    pub headers: TextArea<'static>,
+    pub request_tab: RequestTab,
     pub live: Option<Outcome>,
     pub preview: Option<HistoryEntry>,
     pub sending: bool,
@@ -138,7 +148,8 @@ impl App {
             method: Method::Get,
             url: single_line(""),
             body: TextArea::default(),
-            headers: Vec::new(),
+            headers: TextArea::default(),
+            request_tab: RequestTab::Body,
             live: None,
             preview: None,
             sending: false,
@@ -166,13 +177,38 @@ impl App {
         self.body.lines().join("\n")
     }
 
+    /// The request as edited; header lines that are not `Name: value` are skipped.
     pub fn editor_request(&self) -> Request {
+        self.build_request(headers::parse_lenient(self.headers.lines()))
+    }
+
+    /// Like [`editor_request`](Self::editor_request) but fails on an invalid header line.
+    pub fn try_request(&self) -> Result<Request, String> {
+        Ok(self.build_request(headers::parse(self.headers.lines())?))
+    }
+
+    fn build_request(&self, headers: Vec<Header>) -> Request {
         let body = self.body_text();
         Request {
             method: self.method,
             url: self.url_text().trim().to_owned(),
-            headers: self.headers.clone(),
+            headers,
             body: (!body.is_empty()).then_some(body),
+        }
+    }
+
+    /// The focus value of the editor the request's lower box currently shows.
+    pub fn editor_focus(&self) -> Focus {
+        match self.request_tab {
+            RequestTab::Body => Focus::Body,
+            RequestTab::Headers => Focus::Headers,
+        }
+    }
+
+    pub fn set_request_tab(&mut self, tab: RequestTab) {
+        self.request_tab = tab;
+        if matches!(self.focus, Focus::Body | Focus::Headers) {
+            self.focus = self.editor_focus();
         }
     }
 
@@ -257,10 +293,15 @@ impl App {
             (KeyCode::Char('s'), true) => return self.send(),
             (KeyCode::Char('n'), true) => return self.method = self.method.next(),
             (KeyCode::Char('p'), true) => return self.method = self.method.prev(),
+            (KeyCode::Char('t'), true) => return self.toggle_request_tab(),
             (KeyCode::PageDown, _) => return self.scroll = self.scroll.saturating_add(5),
             (KeyCode::PageUp, _) => return self.scroll = self.scroll.saturating_sub(5),
-            (KeyCode::Tab, _) => return self.set_focus(next_focus(self.focus)),
-            (KeyCode::BackTab, _) => return self.set_focus(prev_focus(self.focus)),
+            (KeyCode::Tab, _) => {
+                return self.set_focus(next_focus(self.focus, self.editor_focus()));
+            }
+            (KeyCode::BackTab, _) => {
+                return self.set_focus(prev_focus(self.focus, self.editor_focus()));
+            }
             (KeyCode::Esc, _) => return self.set_focus(Focus::List),
             _ => {}
         }
@@ -276,7 +317,17 @@ impl App {
             Focus::Body => {
                 self.body.input(Input::from(key));
             }
+            Focus::Headers => {
+                self.headers.input(Input::from(key));
+            }
         }
+    }
+
+    fn toggle_request_tab(&mut self) {
+        self.set_request_tab(match self.request_tab {
+            RequestTab::Body => RequestTab::Headers,
+            RequestTab::Headers => RequestTab::Body,
+        });
     }
 
     fn list_key(&mut self, code: KeyCode) {
@@ -356,11 +407,22 @@ impl App {
                     .move_cursor(CursorMove::Jump(0, (at.x - inner.x) + col_scroll as u16));
             }
         } else if areas.body.contains(at) {
-            self.focus_editor(Focus::Body);
+            if let Some(tab) = ui::request_tab_at(areas.body, at, self.view().request.headers.len())
+            {
+                self.focus_editor(self.editor_focus());
+                self.set_request_tab(tab);
+                self.focus = self.editor_focus();
+                return;
+            }
+            self.focus_editor(self.editor_focus());
             let inner = ui::inner(areas.body);
             if inner.contains(at) {
-                let (row_scroll, col_scroll) = ui::editor_scroll(cursor_of(&self.body), inner);
-                self.body.move_cursor(CursorMove::Jump(
+                let ta = match self.request_tab {
+                    RequestTab::Body => &mut self.body,
+                    RequestTab::Headers => &mut self.headers,
+                };
+                let (row_scroll, col_scroll) = ui::editor_scroll(cursor_of(ta), inner);
+                ta.move_cursor(CursorMove::Jump(
                     (at.y - inner.y) + row_scroll as u16,
                     (at.x - inner.x) + col_scroll as u16,
                 ));
@@ -474,7 +536,10 @@ impl App {
             .as_deref()
             .map(|b| TextArea::new(b.lines().map(str::to_owned).collect()))
             .unwrap_or_default();
-        self.headers = request.headers.clone();
+        self.headers = match headers::to_lines(&request.headers) {
+            lines if lines.is_empty() => TextArea::default(),
+            lines => TextArea::new(lines),
+        };
     }
 
     // ---- background work ------------------------------------------------
@@ -483,7 +548,16 @@ impl App {
         if self.sending {
             return;
         }
-        let request = self.editor_request();
+        let request = match self.try_request() {
+            Ok(request) => request,
+            Err(message) => {
+                // show the offending line in red
+                self.status = Some(message);
+                self.request_tab = RequestTab::Headers;
+                self.set_focus(Focus::Headers);
+                return;
+            }
+        };
         if request.url.is_empty() {
             self.status = Some("enter a URL first".into());
             return;
@@ -544,19 +618,19 @@ impl App {
     }
 }
 
-fn next_focus(f: Focus) -> Focus {
+fn next_focus(f: Focus, editor: Focus) -> Focus {
     match f {
         Focus::List => Focus::Url,
-        Focus::Url => Focus::Body,
-        Focus::Body => Focus::List,
+        Focus::Url => editor,
+        Focus::Body | Focus::Headers => Focus::List,
     }
 }
 
-fn prev_focus(f: Focus) -> Focus {
+fn prev_focus(f: Focus, editor: Focus) -> Focus {
     match f {
-        Focus::List => Focus::Body,
+        Focus::List => editor,
         Focus::Url => Focus::List,
-        Focus::Body => Focus::Url,
+        Focus::Body | Focus::Headers => Focus::Url,
     }
 }
 

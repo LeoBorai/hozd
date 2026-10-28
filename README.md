@@ -14,7 +14,8 @@ Built on [reqwest](https://docs.rs/reqwest) and [ratatui](https://ratatui.rs).
 
 - **Left**: `Stored` templates and `History`. Moving over an entry previews it: the center
   panel shows its request, the right panel its response (history only). Nothing is sent.
-- **Center**: HTTP method, URL and a JSON body editor with syntax highlighting.
+- **Center**: HTTP method, URL, and a box with two tabs: **Body** (JSON editor with syntax
+  highlighting) and **Headers** (one `Name: value` per line).
 - **Right**: response status, headers and body.
 
 ## Install
@@ -74,6 +75,7 @@ Content-Type = "application/json"
 | `Enter`           | Load the selected entry into the editor (list); send (URL field) |
 | `Ctrl+S`          | Send the request                         |
 | `Ctrl+N` / `Ctrl+P` | Next / previous HTTP method            |
+| `Ctrl+T`          | Switch the request box between Body and Headers |
 | `PgUp` / `PgDn`   | Scroll the response body                 |
 | `y` (list focus)  | Copy the response body to the clipboard  |
 | `q` / `Ctrl+C`    | Quit                                     |
@@ -85,7 +87,8 @@ Content-Type = "application/json"
 | `Stored` / `History` tab       | Switch tab                                          |
 | List item                      | Select and preview; click again to load into editor |
 | Method box                     | Next method (right-click: previous)                 |
-| URL / body                     | Focus the editor and place the cursor               |
+| URL / body / headers           | Focus the editor and place the cursor               |
+| `Body` / `Headers` title       | Switch the request tab                              |
 | Wheel over the list            | Move the selection                                  |
 | Wheel over the response body   | Scroll                                              |
 | Right-click the response body  | Copy it to the clipboard                            |
@@ -93,8 +96,20 @@ Content-Type = "application/json"
 Clicking the editor while previewing an entry loads that entry first, so you edit what
 you were looking at.
 
-Headers of a loaded template or history entry are carried along and sent, but cannot be
-edited in the TUI yet.
+### Headers
+
+The Headers tab is a plain text editor, one header per line, like `curl -H`:
+
+```
+Content-Type: application/json
+Authorization: Bearer abc123
+```
+
+Edit a line to change a header, delete a line to remove it, press `Enter` at the end to
+append another. Blank lines are ignored. Only the first `:` splits name from value, so values
+may contain colons. A line that is not `Name: value` shows in red, and sending is refused
+with the line number until you fix it. Headers of loaded templates and history entries
+appear here and are saved with every history entry.
 
 ## Development
 
