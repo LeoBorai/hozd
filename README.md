@@ -62,6 +62,20 @@ Content-Type = "application/json"
 | `PgUp` / `PgDn`   | Scroll the response body                 |
 | `q` / `Ctrl+C`    | Quit                                     |
 
+### Mouse
+
+| Click                          | Action                                              |
+| ------------------------------ | --------------------------------------------------- |
+| `Stored` / `History` tab       | Switch tab                                          |
+| List item                      | Select and preview; click again to load into editor |
+| Method box                     | Next method (right-click: previous)                 |
+| URL / body                     | Focus the editor and place the cursor               |
+| Wheel over the list            | Move the selection                                  |
+| Wheel over the response body   | Scroll                                              |
+
+Clicking the editor while previewing an entry loads that entry first, so you edit what
+you were looking at.
+
 Headers of a loaded template or history entry are carried along and sent, but cannot be
 edited in the TUI yet.
 

@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Position, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Tabs};
@@ -20,9 +20,121 @@ pub fn panel_areas(area: Rect) -> [Rect; 3] {
     .areas(area)
 }
 
+/// Content area inside a bordered block.
+pub fn inner(area: Rect) -> Rect {
+    area.inner(Margin::new(1, 1))
+}
+
+/// Every clickable region, as drawn. `draw` and mouse hit-testing both use this so they
+/// can never disagree. Rects marked "outer" include the border.
+#[derive(Debug, Clone, Copy)]
+pub struct Areas {
+    pub tabs: Rect,
+    pub list: Rect,
+    pub method: Rect,
+    pub url: Rect,
+    pub body: Rect,
+    pub response: Rect,
+    pub response_body: Rect,
+}
+
+/// Splits the left panel's outer rect into its tab row and list.
+fn left_areas(left: Rect) -> (Rect, Rect) {
+    let [tabs, list] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner(left));
+    (tabs, list)
+}
+
+/// Outer rects of the method box, URL box and body box.
+fn center_areas(center: Rect) -> (Rect, Rect, Rect) {
+    let [top, body] = Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(center);
+    let [method, url] =
+        Layout::horizontal([Constraint::Length(12), Constraint::Min(10)]).areas(top);
+    (method, url, body)
+}
+
+/// Outer rects of the status, headers and body boxes.
+fn right_areas(right: Rect) -> (Rect, Rect, Rect) {
+    Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Percentage(30),
+        Constraint::Min(3),
+    ])
+    .areas::<3>(right)
+    .into()
+}
+
+fn main_area(area: Rect) -> (Rect, Rect) {
+    let [main, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    (main, status)
+}
+
+pub fn areas(area: Rect) -> Areas {
+    let (main, _) = main_area(area);
+    let [left, center, right] = panel_areas(main);
+    let (tabs, list) = left_areas(left);
+    let (method, url, body) = center_areas(center);
+    let (response, _, response_body) = right_areas(right);
+    Areas {
+        tabs,
+        list,
+        method,
+        url,
+        body,
+        response,
+        response_body,
+    }
+}
+
+const STORED_TAB_WIDTH: u16 = " Stored ".len() as u16;
+
+/// Which tab title sits under column `x` of the tab row. Matches `Tabs` default padding
+/// (one space each side of a title) and the one-column `|` divider.
+pub fn tab_at(tabs: Rect, x: u16) -> Option<Tab> {
+    let offset = x.checked_sub(tabs.x)?;
+    let history_width = " History ".len() as u16;
+    match offset {
+        o if o < STORED_TAB_WIDTH => Some(Tab::Stored),
+        o if o == STORED_TAB_WIDTH => None, // divider
+        o if o <= STORED_TAB_WIDTH + history_width => Some(Tab::History),
+        _ => None,
+    }
+}
+
+/// First visible list row when `selected_row` must stay in view: the same rule `List`
+/// applies to a fresh state, set explicitly so clicks map to the rows that were drawn.
+pub fn list_offset(selected_row: Option<usize>, height: u16) -> usize {
+    selected_row.map_or(0, |row| (row + 1).saturating_sub(height as usize))
+}
+
+/// For each row of the Stored list, the template it shows (`None` for project headers).
+pub fn stored_row_map(app: &App) -> Vec<Option<usize>> {
+    let mut rows = Vec::new();
+    let mut last_project: Option<&str> = None;
+    for (i, t) in app.templates.iter().enumerate() {
+        if last_project != Some(t.project.as_str()) {
+            rows.push(None);
+            last_project = Some(&t.project);
+        }
+        rows.push(Some(i));
+    }
+    rows
+}
+
+/// Scroll offsets (rows, columns) that keep the cursor inside `area`.
+pub fn editor_scroll(cursor: (usize, usize), area: Rect) -> (usize, usize) {
+    (
+        cursor
+            .0
+            .saturating_sub((area.height as usize).saturating_sub(1)),
+        cursor
+            .1
+            .saturating_sub((area.width as usize).saturating_sub(1)),
+    )
+}
+
 pub fn draw(frame: &mut Frame, app: &App) {
-    let [main, status] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
+    let (main, status) = main_area(frame.area());
     let [left, center, right] = panel_areas(main);
 
     let view = app.view();
@@ -50,10 +162,9 @@ fn block(title: &str, focused: bool) -> Block<'static> {
 fn draw_left(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.focus == Focus::List;
     let outer = block("Requests", focused);
-    let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
-    let [tabs, list] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+    let (tabs, list) = left_areas(area);
     let selected = match app.tab {
         Tab::Stored => 0,
         Tab::History => 1,
@@ -74,7 +185,9 @@ fn draw_left(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Stored => stored_rows(app),
         Tab::History => history_rows(app),
     };
-    let mut state = ListState::default().with_selected(selected_row);
+    let mut state = ListState::default()
+        .with_selected(selected_row)
+        .with_offset(list_offset(selected_row, list.height));
     let highlight = if focused {
         Style::new()
             .bg(Color::DarkGray)
@@ -175,10 +288,7 @@ fn draw_center(
     previewing: bool,
     area: Rect,
 ) {
-    let [top, body_area] =
-        Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(area);
-    let [method_area, url_area] =
-        Layout::horizontal([Constraint::Length(12), Constraint::Min(10)]).areas(top);
+    let (method_area, url_area, body_area) = center_areas(area);
 
     let method_block = block("Method", false);
     let method_inner = method_block.inner(method_area);
@@ -219,8 +329,7 @@ fn render_editor(frame: &mut Frame, ta: &TextArea<'static>, area: Rect, focused:
     }
     let cursor = ta.cursor();
     let (row, col) = (cursor.0, cursor.1);
-    let row_scroll = row.saturating_sub(area.height as usize - 1);
-    let col_scroll = col.saturating_sub(area.width as usize - 1);
+    let (row_scroll, col_scroll) = editor_scroll((row, col), area);
 
     let lines: Vec<Line> = ta
         .lines()
@@ -248,12 +357,7 @@ fn render_editor(frame: &mut Frame, ta: &TextArea<'static>, area: Rect, focused:
 // ---- right ---------------------------------------------------------------
 
 fn draw_right(frame: &mut Frame, app: &App, outcome: Option<&Outcome>, area: Rect) {
-    let [status_area, headers_area, body_area] = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Percentage(30),
-        Constraint::Min(3),
-    ])
-    .areas(area);
+    let (status_area, headers_area, body_area) = right_areas(area);
 
     let status_block = block("Response", false);
     let status_inner = status_block.inner(status_area);

@@ -1,9 +1,13 @@
 use std::path::PathBuf;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui_textarea::{Input, TextArea};
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::{Position, Rect};
+use ratatui_textarea::{CursorMove, Input, TextArea};
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::ui;
 use crate::client::{Header, Method, Request, SharedClient};
 use crate::history::{History, HistoryEntry, Outcome, Summary};
 use crate::project::{Loaded, Template};
@@ -85,6 +89,8 @@ pub struct App {
     pub status: Option<String>,
     pub scroll: u16,
     pub should_quit: bool,
+    /// The list item the last click landed on; clicking it again loads it.
+    last_click: Option<(Tab, usize)>,
 
     client: SharedClient,
     store: History,
@@ -135,6 +141,7 @@ impl App {
             status,
             scroll: 0,
             should_quit: false,
+            last_click: None,
             client,
             store,
             tx,
@@ -277,8 +284,115 @@ impl App {
         }
     }
 
+    // ---- mouse ----------------------------------------------------------
+
+    /// `screen` is the full terminal area the UI was last drawn into.
+    pub fn handle_mouse(&mut self, event: MouseEvent, screen: Rect) {
+        let areas = ui::areas(screen);
+        let at = Position::new(event.column, event.row);
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => self.click(at, &areas),
+            MouseEventKind::Down(MouseButton::Right) if areas.method.contains(at) => {
+                self.focus_editor(Focus::Url);
+                self.method = self.method.prev();
+            }
+            MouseEventKind::ScrollDown => self.wheel(at, &areas, 1),
+            MouseEventKind::ScrollUp => self.wheel(at, &areas, -1),
+            _ => {}
+        }
+    }
+
+    fn click(&mut self, at: Position, areas: &ui::Areas) {
+        if areas.tabs.contains(at) {
+            if let Some(tab) = ui::tab_at(areas.tabs, at.x) {
+                self.focus = Focus::List;
+                self.set_tab(tab);
+            }
+        } else if areas.list.contains(at) {
+            self.click_list(at.y - areas.list.y, areas.list.height);
+        } else if areas.method.contains(at) {
+            self.focus_editor(Focus::Url);
+            self.method = self.method.next();
+        } else if areas.url.contains(at) {
+            self.focus_editor(Focus::Url);
+            let inner = ui::inner(areas.url);
+            if inner.contains(at) {
+                let (_, col_scroll) = ui::editor_scroll(cursor_of(&self.url), inner);
+                self.url
+                    .move_cursor(CursorMove::Jump(0, (at.x - inner.x) + col_scroll as u16));
+            }
+        } else if areas.body.contains(at) {
+            self.focus_editor(Focus::Body);
+            let inner = ui::inner(areas.body);
+            if inner.contains(at) {
+                let (row_scroll, col_scroll) = ui::editor_scroll(cursor_of(&self.body), inner);
+                self.body.move_cursor(CursorMove::Jump(
+                    (at.y - inner.y) + row_scroll as u16,
+                    (at.x - inner.x) + col_scroll as u16,
+                ));
+            }
+        }
+    }
+
+    /// Clicking an item selects (and previews) it; clicking it again loads it.
+    fn click_list(&mut self, y_in_list: u16, height: u16) {
+        let item = match self.tab {
+            Tab::Stored => {
+                let rows = ui::stored_row_map(self);
+                let selected_row = rows.iter().position(|r| *r == Some(self.stored_sel));
+                let offset = ui::list_offset(selected_row, height);
+                rows.get(y_in_list as usize + offset).copied().flatten()
+            }
+            Tab::History => {
+                let selected_row = (!self.history.is_empty()).then_some(self.history_sel);
+                let row = y_in_list as usize + ui::list_offset(selected_row, height);
+                (row < self.history.len()).then_some(row)
+            }
+        };
+        let Some(item) = item else {
+            return;
+        };
+
+        self.focus = Focus::List;
+        if self.last_click == Some((self.tab, item)) {
+            self.last_click = None;
+            self.select(item);
+            self.activate();
+        } else {
+            self.select(item);
+            self.last_click = Some((self.tab, item));
+        }
+    }
+
+    fn select(&mut self, item: usize) {
+        match self.tab {
+            Tab::Stored => self.stored_sel = item,
+            Tab::History => self.history_sel = item,
+        }
+        self.scroll = 0;
+        self.request_preview();
+    }
+
+    fn wheel(&mut self, at: Position, areas: &ui::Areas, direction: i16) {
+        if areas.list.contains(at) {
+            self.move_selection(direction as isize);
+        } else if areas.response_body.contains(at) {
+            self.scroll = self.scroll.saturating_add_signed(direction * 3);
+        }
+    }
+
+    /// Moves focus into the editor. If the panels were previewing a hovered entry, that
+    /// entry is loaded first, so clicking into a preview edits what you were looking at.
+    fn focus_editor(&mut self, focus: Focus) {
+        if self.focus == Focus::List && self.view().previewing {
+            self.activate();
+        }
+        self.set_focus(focus);
+    }
+
     pub fn set_tab(&mut self, tab: Tab) {
         self.tab = tab;
+        self.last_click = None;
         self.scroll = 0;
         self.request_preview();
     }
@@ -298,6 +412,7 @@ impl App {
             return;
         }
         *sel = sel.saturating_add_signed(delta).min(len - 1);
+        self.last_click = None;
         self.scroll = 0;
         self.request_preview();
     }
@@ -415,4 +530,9 @@ fn single_line(text: &str) -> TextArea<'static> {
     let mut ta = TextArea::new(vec![text.to_owned()]);
     ta.move_cursor(ratatui_textarea::CursorMove::End);
     ta
+}
+
+fn cursor_of(ta: &TextArea<'static>) -> (usize, usize) {
+    let c = ta.cursor();
+    (c.0, c.1)
 }
