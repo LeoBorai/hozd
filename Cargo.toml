@@ -2,7 +2,15 @@
 name = "hozd"
 version = "0.1.0"
 edition = "2024"
-publish = false
+publish = true
+description = "HTTP Client TUI"
+repository = "https://github.com/LeoBorai/hozd"
+categories = ["web-programming", "network-programming"]
+homepage = "https://github.com/LeoBorai/hozd"
+keywords = ["web", "network"]
+license = "MIT OR Apache-2.0"
+authors = ["Leo Borai <estebanborai@gmail.com>"]
+readme = "README.md"
 
 [dependencies]
 anyhow = "1.0"
