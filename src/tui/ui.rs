@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Pa
 use ratatui_textarea::TextArea;
 
 use super::app::{App, Focus, Tab};
-use super::json::highlight_line;
+use super::json::{highlight_line, pretty};
 use crate::client::Method;
 use crate::history::Outcome;
 
@@ -410,21 +410,17 @@ fn draw_right(frame: &mut Frame, app: &App, outcome: Option<&Outcome>, area: Rec
     );
 }
 
-/// Pretty-prints JSON bodies; anything else is shown verbatim.
-fn pretty(body: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| serde_json::to_string_pretty(&v).ok())
-        .unwrap_or_else(|| body.to_owned())
-}
-
 // ---- status bar ------------------------------------------------------------
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let text = match &app.status {
         Some(message) => Line::styled(message.clone(), Style::new().fg(Color::Red)),
+        None if app.notice.is_some() => Line::styled(
+            app.notice.clone().unwrap_or_default(),
+            Style::new().fg(Color::Green),
+        ),
         None => Line::styled(
-            "Tab focus | [ ] tabs | j/k move | Enter load | Ctrl+S send | Ctrl+N/P method | PgUp/PgDn scroll | q quit",
+            "Tab focus | [ ] tabs | j/k move | Enter load | Ctrl+S send | Ctrl+N/P method | y copy response | PgUp/PgDn scroll | q quit",
             Style::new().fg(Color::DarkGray),
         ),
     };

@@ -16,10 +16,29 @@ impl<F: FnMut()> Drop for RestoreGuard<F> {
     }
 }
 
+/// Escape sequence asking the terminal to put `text` on the system clipboard (OSC 52).
+/// Works over SSH; inside tmux it is wrapped so tmux forwards it to the outer terminal.
+pub fn osc52(text: &str, in_tmux: bool) -> String {
+    use base64::Engine as _;
+    let payload = base64::engine::general_purpose::STANDARD.encode(text);
+    let seq = format!("\x1b]52;c;{payload}\x07");
+    if in_tmux {
+        format!("\x1bPtmux;{}\x1b\\", seq.replace('\x1b', "\x1b\x1b"))
+    } else {
+        seq
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn osc52_encodes_text_as_base64() {
+        assert_eq!(osc52("hi", false), "\x1b]52;c;aGk=\x07");
+        assert_eq!(osc52("hi", true), "\x1bPtmux;\x1b\x1b]52;c;aGk=\x07\x1b\\");
+    }
 
     #[test]
     fn restores_on_drop_and_on_unwind() {

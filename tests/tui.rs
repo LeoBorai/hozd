@@ -567,3 +567,63 @@ fn hit_areas_match_the_layout() {
     assert!(center.contains(a.method.as_position()) && center.contains(a.body.as_position()));
     assert!(right.contains(a.response_body.as_position()));
 }
+
+// ---- copy ------------------------------------------------------------------
+
+#[tokio::test]
+async fn y_copies_the_pretty_response_body_without_sending() {
+    let mut h = with_two_history_entries().await;
+    pump(&mut h, |a| a.view().previewing).await;
+    h.app.handle_key(key(KeyCode::Char('j'))); // older entry: JSON response {"x":1}
+    pump(&mut h, |a| a.view().request.url == "http://x/first").await;
+
+    h.app.handle_key(key(KeyCode::Char('y')));
+    assert_eq!(h.app.take_clipboard().as_deref(), Some("{\n  \"x\": 1\n}"));
+    assert!(h.app.notice.as_deref().unwrap().contains("copied"));
+    assert!(h.app.take_clipboard().is_none(), "taken once");
+    assert!(h.fake.requests().is_empty());
+
+    let out = text(&render(&h.app, 120, 30));
+    assert!(out.contains("copied"), "{out}");
+    h.app.handle_key(key(KeyCode::Char('k')));
+    assert!(h.app.notice.is_none(), "notice clears on the next key");
+}
+
+#[tokio::test]
+async fn copy_error_message_and_nothing_to_copy() {
+    let mut h = with_two_history_entries().await;
+    pump(&mut h, |a| a.view().previewing).await; // newest = error "boom"
+    h.app.handle_key(key(KeyCode::Char('y')));
+    assert_eq!(h.app.take_clipboard().as_deref(), Some("boom"));
+
+    let mut empty = harness().await; // no response yet
+    empty.app.handle_key(key(KeyCode::Char('y')));
+    assert!(empty.app.take_clipboard().is_none());
+    assert_eq!(empty.app.notice.as_deref(), Some("nothing to copy"));
+}
+
+#[tokio::test]
+async fn right_click_on_response_body_copies() {
+    let mut h = with_two_history_entries().await;
+    h.app.handle_key(key(KeyCode::Char('j')));
+    pump(&mut h, |a| a.view().request.url == "http://x/first").await;
+    let a = ui::areas(SCREEN);
+    h.app.handle_mouse(
+        mouse(
+            MouseEventKind::Down(MouseButton::Right),
+            a.response_body.x + 2,
+            a.response_body.y + 1,
+        ),
+        SCREEN,
+    );
+    assert_eq!(h.app.take_clipboard().as_deref(), Some("{\n  \"x\": 1\n}"));
+}
+
+#[tokio::test]
+async fn y_in_the_editor_types_a_y() {
+    let mut h = harness().await;
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "y");
+    assert_eq!(h.app.url_text(), "y");
+    assert!(h.app.take_clipboard().is_none());
+}

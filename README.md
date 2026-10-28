@@ -60,6 +60,7 @@ Content-Type = "application/json"
 | `Ctrl+S`          | Send the request                         |
 | `Ctrl+N` / `Ctrl+P` | Next / previous HTTP method            |
 | `PgUp` / `PgDn`   | Scroll the response body                 |
+| `y` (list focus)  | Copy the response body to the clipboard  |
 | `q` / `Ctrl+C`    | Quit                                     |
 
 ### Mouse
@@ -72,6 +73,7 @@ Content-Type = "application/json"
 | URL / body                     | Focus the editor and place the cursor               |
 | Wheel over the list            | Move the selection                                  |
 | Wheel over the response body   | Scroll                                              |
+| Right-click the response body  | Copy it to the clipboard                            |
 
 Clicking the editor while previewing an entry loads that entry first, so you edit what
 you were looking at.
@@ -97,3 +99,12 @@ just db-prepare        # refresh the committed .sqlx/ query metadata
 SQL queries are checked at compile time. Builds use the committed `.sqlx/` metadata
 (`SQLX_OFFLINE=true`); after changing a query or a migration run `just db-prepare` and
 commit `.sqlx/`. Never edit a released migration: add a new one.
+
+### Copying
+
+hozd captures the mouse, so the terminal's own text selection is off by default; hold
+`Shift` (`Option` in iTerm2, `Fn` in some terminals) while dragging to select text natively.
+To copy the whole response body use `y` or right-click it. The text (pretty-printed when
+it is JSON) goes to the clipboard with the OSC 52 escape sequence, which works over SSH
+and inside tmux (needs `set -g set-clipboard on`). Terminals without OSC 52 support
+(for example macOS Terminal.app) ignore it; use Shift+drag there.

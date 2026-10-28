@@ -87,6 +87,14 @@ pub fn tokens(line: &str) -> Vec<(Kind, String)> {
     out
 }
 
+/// Pretty-prints JSON bodies; anything else is returned verbatim.
+pub fn pretty(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        .unwrap_or_else(|| body.to_owned())
+}
+
 pub fn highlight_line(line: &str) -> Line<'static> {
     Line::from(
         tokens(line)

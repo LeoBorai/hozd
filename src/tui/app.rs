@@ -7,6 +7,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui_textarea::{CursorMove, Input, TextArea};
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::json::pretty;
 use super::ui;
 use crate::client::{Header, Method, Request, SharedClient};
 use crate::history::{History, HistoryEntry, Outcome, Summary};
@@ -87,6 +88,9 @@ pub struct App {
     pub preview: Option<HistoryEntry>,
     pub sending: bool,
     pub status: Option<String>,
+    /// A non-error message for the status bar, cleared by the next key press.
+    pub notice: Option<String>,
+    clipboard: Option<String>,
     pub scroll: u16,
     pub should_quit: bool,
     /// The list item the last click landed on; clicking it again loads it.
@@ -139,6 +143,8 @@ impl App {
             preview: None,
             sending: false,
             status,
+            notice: None,
+            clipboard: None,
             scroll: 0,
             should_quit: false,
             last_click: None,
@@ -243,6 +249,7 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        self.notice = None;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
         match (key.code, ctrl) {
@@ -275,6 +282,7 @@ impl App {
     fn list_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('y') => self.copy_response(),
             KeyCode::Char('[') | KeyCode::Left | KeyCode::Char('h') => self.set_tab(Tab::Stored),
             KeyCode::Char(']') | KeyCode::Right | KeyCode::Char('l') => self.set_tab(Tab::History),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
@@ -282,6 +290,29 @@ impl App {
             KeyCode::Enter => self.activate(),
             _ => {}
         }
+    }
+
+    // ---- clipboard -----------------------------------------------------
+
+    /// Queues the response body shown in the right panel (pretty-printed when it is JSON)
+    /// for the clipboard; the event loop writes it to the terminal.
+    pub fn copy_response(&mut self) {
+        let text = match self.view().outcome {
+            Some(Outcome::Response(r)) => pretty(&r.body),
+            Some(Outcome::Error(message)) => message.clone(),
+            None => String::new(),
+        };
+        if text.is_empty() {
+            self.notice = Some("nothing to copy".into());
+        } else {
+            self.notice = Some(format!("copied {} bytes to the clipboard", text.len()));
+            self.clipboard = Some(text);
+        }
+    }
+
+    /// Text waiting to be put on the clipboard, if a copy was requested.
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.clipboard.take()
     }
 
     // ---- mouse ----------------------------------------------------------
@@ -295,6 +326,9 @@ impl App {
             MouseEventKind::Down(MouseButton::Right) if areas.method.contains(at) => {
                 self.focus_editor(Focus::Url);
                 self.method = self.method.prev();
+            }
+            MouseEventKind::Down(MouseButton::Right) if areas.response_body.contains(at) => {
+                self.copy_response()
             }
             MouseEventKind::ScrollDown => self.wheel(at, &areas, 1),
             MouseEventKind::ScrollUp => self.wheel(at, &areas, -1),

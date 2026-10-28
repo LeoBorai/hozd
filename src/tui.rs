@@ -9,7 +9,7 @@ use ratatui::layout::Rect;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 pub use app::{App, Focus, HISTORY_LIMIT, Msg, RequestView, StoredTemplate, Tab, View};
-pub use terminal::RestoreGuard;
+pub use terminal::{RestoreGuard, osc52};
 
 /// Runs the TUI until the user quits. State changes only happen in this loop; requests
 /// run in spawned tasks and report back through `rx`, so the UI never blocks on them.
@@ -29,6 +29,12 @@ pub async fn run(mut app: App, mut rx: UnboundedReceiver<Msg>) -> std::io::Resul
     let mut events = EventStream::new();
 
     while !app.should_quit {
+        if let Some(text) = app.take_clipboard() {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            out.write_all(osc52(&text, std::env::var_os("TMUX").is_some()).as_bytes())?;
+            out.flush()?;
+        }
         terminal.draw(|frame| ui::draw(frame, &app))?;
         tokio::select! {
             Some(event) = events.next() => {
