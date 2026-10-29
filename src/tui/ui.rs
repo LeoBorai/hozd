@@ -7,11 +7,13 @@ use ratatui::widgets::{
 };
 use ratatui_textarea::TextArea;
 
-use super::app::{App, Focus, RequestTab, Tab};
+use super::app::{App, Focus, RequestTab, SchemaMode, Tab};
 use super::headers;
 use super::json::{highlight_line, pretty};
-use crate::client::Method;
+use super::log::Level;
+use crate::client::{Kind, Method, SchemaSource, status_name};
 use crate::history::Outcome;
+use crate::project::TemplateKind;
 
 /// Left, center and right panels on a 12-column grid: 3-6-3.
 pub fn panel_areas(area: Rect) -> [Rect; 3] {
@@ -34,26 +36,79 @@ pub fn inner(area: Rect) -> Rect {
 pub struct Areas {
     pub tabs: Rect,
     pub list: Rect,
+    /// The log box (outer).
+    pub logs: Rect,
     pub method: Rect,
     pub url: Rect,
+    /// gRPC mode only.
+    pub schema: Rect,
+    /// The method picker box; gRPC mode only.
+    pub rpc: Rect,
     pub body: Rect,
     pub response: Rect,
     pub response_body: Rect,
 }
 
-/// Splits the left panel's outer rect into its tab row and list.
-fn left_areas(left: Rect) -> (Rect, Rect) {
+/// Splits the left column 50/50: the request list on top, the log below. Both are outer
+/// rects.
+fn left_split(left: Rect) -> (Rect, Rect) {
+    let [requests, log] =
+        Layout::vertical([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(left);
+    (requests, log)
+}
+
+/// Splits the request list's outer rect into its tab row and list.
+fn left_areas(requests: Rect) -> (Rect, Rect) {
     let [tabs, list] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner(left));
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner(requests));
     (tabs, list)
 }
 
-/// Outer rects of the method box, URL box and body box.
-fn center_areas(center: Rect) -> (Rect, Rect, Rect) {
-    let [top, body] = Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(center);
-    let [method, url] =
-        Layout::horizontal([Constraint::Length(12), Constraint::Min(10)]).areas(top);
-    (method, url, body)
+/// Outer rects of the center panel's boxes. `schema` and `rpc` only exist in gRPC mode
+/// and are empty otherwise; `method` holds the TLS state there.
+struct Center {
+    method: Rect,
+    url: Rect,
+    schema: Rect,
+    rpc: Rect,
+    body: Rect,
+}
+
+fn center_areas(center: Rect, kind: Kind) -> Center {
+    let top_row = |top: Rect| {
+        Layout::horizontal([Constraint::Length(12), Constraint::Min(10)]).areas::<2>(top)
+    };
+    match kind {
+        Kind::Http => {
+            let [top, body] =
+                Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(center);
+            let [method, url] = top_row(top);
+            Center {
+                method,
+                url,
+                schema: Rect::ZERO,
+                rpc: Rect::ZERO,
+                body,
+            }
+        }
+        Kind::Grpc => {
+            let [top, schema, rpc, body] = Layout::vertical([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(3),
+            ])
+            .areas(center);
+            let [method, url] = top_row(top);
+            Center {
+                method,
+                url,
+                schema,
+                rpc,
+                body,
+            }
+        }
+    }
 }
 
 /// Outer rects of the status, headers and body boxes.
@@ -78,20 +133,78 @@ pub fn modal_area(area: Rect) -> Rect {
     main.inner(Margin::new(2, 1))
 }
 
+/// The regions of the REST layout.
+/// The method picker: the center panel with a one-cell margin.
+pub fn picker_area(area: Rect) -> Rect {
+    let (main, _) = main_area(area);
+    let [_, center, _] = panel_areas(main);
+    center.inner(Margin::new(1, 1))
+}
+
+/// The rows of the picker where methods are listed: below the filter line.
+pub fn picker_list_area(picker: Rect) -> Rect {
+    let [_, list] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner(picker));
+    list
+}
+
+/// What each row of the picker shows: `None` for a service header, else the index of the
+/// method in [`App::picker_matches`].
+pub fn picker_row_map(app: &App) -> Vec<Option<usize>> {
+    let mut rows = Vec::new();
+    let mut last_service: Option<&str> = None;
+    for (i, m) in app.picker_matches().into_iter().enumerate() {
+        if last_service != Some(m.service.as_str()) {
+            rows.push(None);
+            last_service = Some(&m.service);
+        }
+        rows.push(Some(i));
+    }
+    rows
+}
+
 pub fn areas(area: Rect) -> Areas {
+    areas_for(area, Kind::Http)
+}
+
+/// The regions of the layout the center panel has for `kind`.
+pub fn areas_for(area: Rect, kind: Kind) -> Areas {
     let (main, _) = main_area(area);
     let [left, center, right] = panel_areas(main);
-    let (tabs, list) = left_areas(left);
-    let (method, url, body) = center_areas(center);
+    let (requests, logs) = left_split(left);
+    let (tabs, list) = left_areas(requests);
+    let center = center_areas(center, kind);
     let (response, _, response_body) = right_areas(right);
     Areas {
         tabs,
         list,
-        method,
-        url,
-        body,
+        logs,
+        method: center.method,
+        url: center.url,
+        schema: center.schema,
+        rpc: center.rpc,
+        body: center.body,
         response,
         response_body,
+    }
+}
+
+/// The kind selector in the top border of the URL box, right-aligned.
+const KIND_LABEL: &str = " REST | gRPC ";
+
+/// Which kind label sits under `at`: the selector is drawn in the top border of the URL
+/// box (`url` is its outer rect), right-aligned and one column short of the corner.
+pub fn kind_at(url: Rect, at: Position) -> Option<Kind> {
+    if at.y != url.y {
+        return None;
+    }
+    let width = KIND_LABEL.len() as u16;
+    let start = url.right().checked_sub(1 + width)?;
+    let offset = at.x.checked_sub(start)?;
+    match offset {
+        o if o < 7 => Some(Kind::Http),
+        o if o < width => Some(Kind::Grpc),
+        _ => None,
     }
 }
 
@@ -130,24 +243,34 @@ pub fn stored_row_map(app: &App) -> Vec<Option<usize>> {
     rows
 }
 
-/// Titles of the request's lower box: `" Body "` and `" Headers (n) "`, joined by `|`.
-fn request_tab_labels(header_count: usize) -> (String, String) {
-    let headers = if header_count == 0 {
-        " Headers ".to_owned()
-    } else {
-        format!(" Headers ({header_count}) ")
+/// Titles of the request's lower box: `" Body "` and `" Headers (n) "` (`" Metadata (n) "`
+/// for gRPC), joined by `|`.
+fn request_tab_labels(count: usize, kind: Kind) -> (String, String) {
+    let name = match kind {
+        Kind::Http => "Headers",
+        Kind::Grpc => "Metadata",
     };
-    (" Body ".to_owned(), headers)
+    let second = if count == 0 {
+        format!(" {name} ")
+    } else {
+        format!(" {name} ({count}) ")
+    };
+    (" Body ".to_owned(), second)
 }
 
 /// Which request tab title is under `at`; titles sit on the box's top border, starting
 /// one column in. `header_count` must be the count shown in the title.
-pub fn request_tab_at(body: Rect, at: Position, header_count: usize) -> Option<RequestTab> {
+pub fn request_tab_at(
+    body: Rect,
+    at: Position,
+    header_count: usize,
+    kind: Kind,
+) -> Option<RequestTab> {
     if at.y != body.y {
         return None;
     }
     let offset = at.x.checked_sub(body.x + 1)? as usize;
-    let (body_label, headers_label) = request_tab_labels(header_count);
+    let (body_label, headers_label) = request_tab_labels(header_count, kind);
     let divider = body_label.len();
     match offset {
         o if o < divider => Some(RequestTab::Body),
@@ -178,9 +301,96 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_center(frame, app, &view.request, view.previewing, center);
     draw_right(frame, app, view.outcome, right);
     draw_status(frame, app, status);
+    if app.picker.is_some() {
+        draw_picker(frame, app, frame.area());
+    }
     if let Some(modal) = &app.modal {
         draw_modal(frame, modal, frame.area());
     }
+}
+
+// ---- method picker ------------------------------------------------------------
+
+fn draw_picker(frame: &mut Frame, app: &App, screen: Rect) {
+    let Some(picker) = &app.picker else {
+        return;
+    };
+    let area = picker_area(screen);
+    frame.render_widget(Clear, area);
+    let title = Line::from(vec![
+        Span::styled(" Pick a method ", Style::new().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "| type to filter | Up/Down | Enter | Esc ",
+            Style::new().fg(Color::DarkGray),
+        ),
+    ]);
+    let outer = block_titled(title, true);
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+    let list_area = picker_list_area(area);
+    if inner.height == 0 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("> ", Style::new().fg(Color::Green)),
+            Span::raw(picker.filter.clone()),
+        ])),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+
+    let matches = app.picker_matches();
+    if matches.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "no method matches",
+                Style::new().fg(Color::DarkGray),
+            )),
+            list_area,
+        );
+        return;
+    }
+    let map = picker_row_map(app);
+    // A header row is always followed by the first method of its service.
+    let rows: Vec<ListItem> = map
+        .iter()
+        .enumerate()
+        .map(|(row, entry)| match entry {
+            Some(i) => ListItem::new(Line::from(vec![
+                Span::raw("  "),
+                Span::raw(matches[*i].name.clone()),
+                Span::styled(
+                    format!("  [{}]", matches[*i].kind.label()),
+                    Style::new().fg(Color::Magenta),
+                ),
+            ])),
+            None => {
+                let service = map
+                    .get(row + 1)
+                    .copied()
+                    .flatten()
+                    .map(|i| matches[i].service.clone())
+                    .unwrap_or_default();
+                ListItem::new(Line::styled(
+                    service,
+                    Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ))
+            }
+        })
+        .collect();
+    let selected_row = map.iter().position(|r| *r == Some(picker.selected));
+    let mut state = ListState::default()
+        .with_selected(selected_row)
+        .with_offset(list_offset(selected_row, list_area.height));
+    frame.render_stateful_widget(
+        List::new(rows).highlight_style(
+            Style::new()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
+        list_area,
+        &mut state,
+    );
 }
 
 // ---- reading panel ----------------------------------------------------------
@@ -195,11 +405,16 @@ fn draw_modal(frame: &mut Frame, modal: &super::modal::Modal, screen: Rect) {
     };
     let title = Line::from(vec![
         Span::styled(
-            format!(" Response body - {} ({view}) ", modal.kind().label()),
+            match modal.kind() {
+                super::modal::Kind::Text if modal.title() != "Response body" => {
+                    format!(" {} ", modal.title())
+                }
+                kind => format!(" {} - {} ({view}) ", modal.title(), kind.label()),
+            },
             Style::new().add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            "| F format | j/k PgUp/PgDn scroll | y copy | Esc close ",
+            "| F format | j/k PgUp/PgDn scroll | drag select+copy | y copy | Esc close ",
             Style::new().fg(Color::DarkGray),
         ),
     ]);
@@ -212,9 +427,17 @@ fn draw_modal(frame: &mut Frame, modal: &super::modal::Modal, screen: Rect) {
 
     modal.with_lines(inner.width as usize, |lines| {
         modal.set_viewport(lines.len(), inner.height as usize);
-        let start = modal.scroll.min(lines.len());
+        let start = modal.top().min(lines.len());
         let end = (start + inner.height as usize).min(lines.len());
-        frame.render_widget(Paragraph::new(lines[start..end].to_vec()), inner);
+        let visible: Vec<Line> = lines[start..end]
+            .iter()
+            .enumerate()
+            .map(|(i, line)| match modal.selected_cols(start + i) {
+                Some((from, to)) => super::modal::reverse_cols(line.clone(), from, to),
+                None => line.clone(),
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(visible), inner);
     });
 }
 
@@ -234,6 +457,55 @@ fn block_titled(title: Line<'static>, focused: bool) -> Block<'static> {
 // ---- left ----------------------------------------------------------------
 
 fn draw_left(frame: &mut Frame, app: &App, area: Rect) {
+    let (requests, log) = left_split(area);
+    draw_requests(frame, app, requests);
+    draw_log(frame, app, log);
+}
+
+/// The log, newest entry last; shows the tail that fits.
+fn draw_log(frame: &mut Frame, app: &App, area: Rect) {
+    let outer = block("Logs (Ctrl+E: open)", false);
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    if app.log.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "no events yet",
+                Style::new().fg(Color::DarkGray),
+            )),
+            inner,
+        );
+        return;
+    }
+    let mut lines: Vec<Line> = app
+        .log
+        .entries()
+        .rev()
+        .take(inner.height as usize)
+        .map(|e| {
+            let color = match e.level {
+                Level::Info => Color::Reset,
+                Level::Error => Color::Red,
+                Level::Detail => match e.message.chars().next() {
+                    Some('>') => Color::Cyan,
+                    Some('<') => Color::Green,
+                    _ => Color::DarkGray,
+                },
+            };
+            Line::from(vec![
+                Span::styled(format!("{} ", e.time), Style::new().fg(Color::DarkGray)),
+                Span::styled(e.message.clone(), Style::new().fg(color)),
+            ])
+        })
+        .collect();
+    lines.reverse();
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.focus == Focus::List;
     let outer = block("Requests", focused);
     frame.render_widget(outer, area);
@@ -296,7 +568,10 @@ fn stored_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) {
         }
         rows.push(ListItem::new(Line::from(vec![
             Span::raw("  "),
-            method_span(t.template.method),
+            match &t.template.kind {
+                TemplateKind::Http(h) => method_span(h.method),
+                TemplateKind::Grpc(_) => Span::styled("gRPC  ", Style::new().fg(Color::Magenta)),
+            },
             Span::raw(format!(" {}", t.template.name)),
         ])));
     }
@@ -310,20 +585,48 @@ fn history_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) {
     let rows = app
         .history
         .iter()
-        .map(|s| {
-            let status = match s.status {
-                Some(code) => Span::styled(code.to_string(), status_style(code)),
-                None => Span::styled("ERR", Style::new().fg(Color::Red)),
-            };
-            ListItem::new(Line::from(vec![
-                status,
-                Span::raw(" "),
-                method_span(s.method),
-                Span::raw(format!(" {}", s.url)),
-            ]))
+        .map(|s| match s.kind {
+            Kind::Http => {
+                let status = match s.status {
+                    Some(code) => Span::styled(code.to_string(), status_style(code)),
+                    None => Span::styled("ERR", Style::new().fg(Color::Red)),
+                };
+                let method = match s.method.parse::<Method>() {
+                    Ok(method) => method_span(method),
+                    Err(_) => Span::raw(format!("{:<6}", s.method)),
+                };
+                ListItem::new(Line::from(vec![
+                    status,
+                    Span::raw(" "),
+                    method,
+                    Span::raw(format!(" {}", s.url)),
+                ]))
+            }
+            Kind::Grpc => {
+                let status = match s.status {
+                    Some(0) => Span::styled("OK", Style::new().fg(Color::Green)),
+                    Some(code) => {
+                        Span::styled(status_name(i32::from(code)), Style::new().fg(Color::Red))
+                    }
+                    None => Span::styled("ERR", Style::new().fg(Color::Red)),
+                };
+                ListItem::new(Line::from(vec![
+                    status,
+                    Span::raw(" "),
+                    Span::styled("gRPC ", Style::new().fg(Color::Magenta)),
+                    Span::raw(short_method(&s.method).to_owned()),
+                ]))
+            }
         })
         .collect();
     (rows, Some(app.history_sel))
+}
+
+/// `user.v1.UserService/GetUser` -> `UserService/GetUser`.
+fn short_method(full: &str) -> &str {
+    let service_end = full.find('/').unwrap_or(full.len());
+    let start = full[..service_end].rfind('.').map_or(0, |i| i + 1);
+    &full[start..]
 }
 
 fn dim(text: &str) -> ListItem<'static> {
@@ -362,31 +665,212 @@ fn draw_center(
     previewing: bool,
     area: Rect,
 ) {
-    let (method_area, url_area, body_area) = center_areas(area);
+    let center = center_areas(area, request.kind);
 
-    let method_block = block("Method", false);
-    let method_inner = method_block.inner(method_area);
-    frame.render_widget(method_block, method_area);
-    frame.render_widget(Paragraph::new(method_span(request.method)), method_inner);
+    let grpc = request.kind == Kind::Grpc;
+    let method_block = block(if grpc { "TLS" } else { "Method" }, false);
+    let method_inner = method_block.inner(center.method);
+    frame.render_widget(method_block, center.method);
+    let method_text = if grpc {
+        tls_span(&request.url, request.grpc.insecure)
+    } else {
+        method_span(request.method)
+    };
+    frame.render_widget(Paragraph::new(method_text), method_inner);
 
-    let url_title = if previewing { "URL (preview)" } else { "URL" };
-    let url_block = block(url_title, app.focus == Focus::Url);
-    let url_inner = url_block.inner(url_area);
-    frame.render_widget(url_block, url_area);
+    draw_address(frame, app, request, previewing, center.url);
+    if grpc {
+        draw_schema(frame, app, request, previewing, center.schema);
+        draw_rpc(frame, app, request, previewing, center.rpc);
+    }
+    draw_request_box(frame, app, request, previewing, center.body);
+}
+
+/// The URL (REST) or address (gRPC) box, with the kind selector on its top border.
+fn draw_address(
+    frame: &mut Frame,
+    app: &App,
+    request: &super::app::RequestView,
+    previewing: bool,
+    area: Rect,
+) {
+    let title = match (request.kind, previewing) {
+        (Kind::Http, false) => "URL",
+        (Kind::Http, true) => "URL (preview)",
+        (Kind::Grpc, false) => "Address",
+        (Kind::Grpc, true) => "Address (preview)",
+    };
+    let selected = Style::new()
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        .fg(Color::Yellow);
+    let (rest_style, grpc_style) = match request.kind {
+        Kind::Http => (selected, Style::new()),
+        Kind::Grpc => (Style::new(), selected),
+    };
+    let mut title_spans = vec![Span::raw(format!(" {title} "))];
+    if request.kind == Kind::Grpc && request.grpc.insecure && is_tls(&request.url) {
+        title_spans.push(Span::styled(
+            "- NOT VERIFIED ",
+            Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ));
+    }
+    let block = block_titled(Line::from(title_spans), app.focus == Focus::Url).title_top(
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled("REST", rest_style),
+            Span::raw(" | "),
+            Span::styled("gRPC", grpc_style),
+            Span::raw(" "),
+        ])
+        .right_aligned(),
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
     if previewing {
-        frame.render_widget(Paragraph::new(request.url.clone()), url_inner);
+        frame.render_widget(Paragraph::new(request.url.clone()), inner);
     } else {
         render_editor(
             frame,
             &app.url,
-            url_inner,
+            inner,
             app.focus == Focus::Url,
             Syntax::Plain,
         );
     }
+}
 
+fn is_tls(address: &str) -> bool {
+    address.trim_start().starts_with("https://")
+}
+
+fn tls_span(address: &str, insecure: bool) -> Span<'static> {
+    match (is_tls(address), insecure) {
+        (false, _) => Span::styled("plain", Style::new().fg(Color::DarkGray)),
+        (true, false) => Span::styled("verified", Style::new().fg(Color::Green)),
+        (true, true) => Span::styled(
+            "insecure",
+            Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+    }
+}
+
+/// gRPC: where the schema comes from, and what was loaded from it.
+fn draw_schema(
+    frame: &mut Frame,
+    app: &App,
+    request: &super::app::RequestView,
+    previewing: bool,
+    area: Rect,
+) {
+    let status = if previewing {
+        None
+    } else {
+        Some(app.schema_status())
+    };
+    let mut block = block("Schema", app.focus == Focus::Schema);
+    if let Some(status) = status {
+        block = block.title_top(
+            Line::styled(format!(" {status} "), Style::new().fg(Color::DarkGray)).right_aligned(),
+        );
+    }
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let file_mode = match (previewing, &request.grpc.schema) {
+        (true, SchemaSource::File(_)) => true,
+        (true, SchemaSource::Reflection) => false,
+        (false, _) => app.schema_mode == SchemaMode::File,
+    };
+    if file_mode && !previewing {
+        if app.schema_path_text().is_empty() && app.focus != Focus::Schema {
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    "file: path to a .proto, .bin, .pb or .desc (Ctrl+O: reflection)",
+                    Style::new().fg(Color::DarkGray),
+                )),
+                inner,
+            );
+        } else {
+            render_editor(
+                frame,
+                &app.schema_path,
+                inner,
+                app.focus == Focus::Schema,
+                Syntax::Plain,
+            );
+        }
+    } else if let (true, SchemaSource::File(path)) = (previewing, &request.grpc.schema) {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("file: ", Style::new().fg(Color::Cyan)),
+                Span::raw(path.to_string_lossy().into_owned()),
+            ])),
+            inner,
+        );
+    } else {
+        let hint = if previewing {
+            ""
+        } else {
+            "  (Ctrl+O: use a file, Ctrl+L: load)"
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("reflection", Style::new().fg(Color::Cyan)),
+                Span::styled(hint, Style::new().fg(Color::DarkGray)),
+            ])),
+            inner,
+        );
+    }
+}
+
+/// gRPC: the selected `service/method` and its call kind.
+fn draw_rpc(
+    frame: &mut Frame,
+    app: &App,
+    request: &super::app::RequestView,
+    previewing: bool,
+    area: Rect,
+) {
+    let title = if previewing {
+        "Method (preview)"
+    } else {
+        "Method (Enter: pick)"
+    };
+    let block = block(title, app.focus == Focus::Method);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let line = if request.grpc.method.is_empty() {
+        Line::styled(
+            "none selected: load the schema, then pick a method",
+            Style::new().fg(Color::DarkGray),
+        )
+    } else {
+        let mut spans = vec![Span::styled(
+            request.grpc.method.clone(),
+            Style::new().fg(Color::Yellow),
+        )];
+        if let Some(kind) = app.method_kind(&request.grpc.method) {
+            spans.push(Span::styled(
+                format!("  [{}]", kind.label()),
+                Style::new().fg(Color::Magenta),
+            ));
+        }
+        Line::from(spans)
+    };
+    frame.render_widget(Paragraph::new(line), inner);
+}
+
+/// The Body / Headers (Metadata) box.
+fn draw_request_box(
+    frame: &mut Frame,
+    app: &App,
+    request: &super::app::RequestView,
+    previewing: bool,
+    area: Rect,
+) {
     let lower_focused = matches!(app.focus, Focus::Body | Focus::Headers);
-    let (body_label, headers_label) = request_tab_labels(request.headers.len());
+    let (body_label, headers_label) = request_tab_labels(request.headers.len(), request.kind);
     let active = Style::new()
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         .fg(Color::Yellow);
@@ -400,8 +884,8 @@ fn draw_center(
         Span::styled(headers_label, headers_style),
     ]);
     let body_block = block_titled(title, lower_focused);
-    let body_inner = body_block.inner(body_area);
-    frame.render_widget(body_block, body_area);
+    let body_inner = body_block.inner(area);
+    frame.render_widget(body_block, area);
     match (app.request_tab, previewing) {
         (RequestTab::Body, true) => {
             let lines: Vec<Line> = request.body.lines().map(highlight_line).collect();
@@ -484,6 +968,14 @@ fn draw_right(frame: &mut Frame, app: &App, outcome: Option<&Outcome>, area: Rec
     let status_inner = status_block.inner(status_area);
     frame.render_widget(status_block, status_area);
     let status_line = match outcome {
+        Some(Outcome::Grpc(g)) if app.sending => {
+            let text = if g.messages.is_empty() && !g.response_stream {
+                "sending...  ^X cancel".to_owned()
+            } else {
+                format!("streaming {}  ^X cancel", g.messages.len())
+            };
+            Line::styled(text, Style::new().fg(Color::Yellow))
+        }
         _ if app.sending => Line::styled("sending...", Style::new().fg(Color::Yellow)),
         Some(Outcome::Response(r)) => Line::from(vec![
             Span::styled(
@@ -492,6 +984,30 @@ fn draw_right(frame: &mut Frame, app: &App, outcome: Option<&Outcome>, area: Rec
             ),
             Span::raw(format!("  {} ms", r.elapsed.as_millis())),
         ]),
+        Some(Outcome::Grpc(g)) => match &g.status {
+            Some(s) => Line::from(vec![
+                Span::styled(
+                    format!("{} ({})", s.name(), s.code),
+                    Style::new()
+                        .fg(if s.code == 0 {
+                            Color::Green
+                        } else {
+                            Color::Red
+                        })
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!("  {} ms", g.elapsed.as_millis())),
+                Span::styled(
+                    match s.trailers.len() {
+                        0 => String::new(),
+                        1 => "  1 trailer".to_owned(),
+                        n => format!("  {n} trailers"),
+                    },
+                    Style::new().fg(Color::DarkGray),
+                ),
+            ]),
+            None => Line::styled("failed", Style::new().fg(Color::Red)),
+        },
         Some(Outcome::Error(_)) => Line::styled("failed", Style::new().fg(Color::Red)),
         None => Line::styled("no response yet", Style::new().fg(Color::DarkGray)),
     };
@@ -511,6 +1027,20 @@ fn draw_right(frame: &mut Frame, app: &App, outcome: Option<&Outcome>, area: Rec
                 ])
             })
             .collect(),
+        Some(Outcome::Grpc(g)) => {
+            let trailers = g.status.iter().flat_map(|s| s.trailers.iter());
+            g.metadata
+                .iter()
+                .map(|h| (h, Color::Cyan, ""))
+                .chain(trailers.map(|h| (h, Color::Blue, "trailer ")))
+                .map(|(h, color, prefix)| {
+                    Line::from(vec![
+                        Span::styled(format!("{prefix}{}: ", h.name), Style::new().fg(color)),
+                        Span::raw(h.value.clone()),
+                    ])
+                })
+                .collect()
+        }
         _ => Vec::new(),
     };
     frame.render_widget(Paragraph::new(header_lines), headers_inner);
@@ -521,6 +1051,7 @@ fn draw_right(frame: &mut Frame, app: &App, outcome: Option<&Outcome>, area: Rec
     let body_lines: Vec<Line> = match outcome {
         Some(Outcome::Response(r)) => pretty(&r.body).lines().map(highlight_line).collect(),
         Some(Outcome::Error(msg)) => vec![Line::styled(msg.clone(), Style::new().fg(Color::Red))],
+        Some(Outcome::Grpc(g)) => grpc_body_lines(g),
         None => Vec::new(),
     };
     frame.render_widget(
@@ -531,7 +1062,45 @@ fn draw_right(frame: &mut Frame, app: &App, outcome: Option<&Outcome>, area: Rec
     );
 }
 
+/// The messages of a gRPC call, numbered when there can be several, then the status
+/// message of a call that did not end `OK`.
+fn grpc_body_lines(g: &crate::client::GrpcOutcome) -> Vec<Line<'static>> {
+    if let (None, Some(error)) = (&g.status, &g.error) {
+        return vec![Line::styled(error.clone(), Style::new().fg(Color::Red))];
+    }
+    let numbered = g.response_stream || g.messages.len() > 1;
+    let mut lines = Vec::new();
+    for (i, message) in g.messages.iter().enumerate() {
+        if numbered {
+            if i > 0 {
+                lines.push(Line::raw(""));
+            }
+            lines.push(Line::styled(
+                format!("#{}", i + 1),
+                Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ));
+        }
+        lines.extend(pretty(message).lines().map(highlight_line));
+    }
+    if let Some(status) = g.status.as_ref().filter(|s| s.code != 0) {
+        if !lines.is_empty() {
+            lines.push(Line::raw(""));
+        }
+        let text = if status.message.is_empty() {
+            status.name().to_owned()
+        } else {
+            format!("{}: {}", status.name(), status.message)
+        };
+        lines.push(Line::styled(text, Style::new().fg(Color::Red)));
+    }
+    lines
+}
+
 // ---- status bar ------------------------------------------------------------
+
+/// Both fit a 120-column terminal; the README has the full key tables.
+pub const HELP_REST: &str = "Tab focus | Ctrl+G gRPC | [ ] tabs | j/k move | Enter load | Ctrl+S send | Ctrl+N/P method | Ctrl+T hdrs | q quit";
+pub const HELP_GRPC: &str = "Ctrl+G REST/gRPC | Ctrl+L schema | Ctrl+N method | Ctrl+S send | Ctrl+X cancel | Ctrl+O source | Ctrl+K TLS | q quit";
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let text = match &app.status {
@@ -541,7 +1110,10 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             Style::new().fg(Color::Green),
         ),
         None => Line::styled(
-            "Tab focus | [ ] tabs | j/k move | Enter load | Ctrl+S send | Ctrl+N/P method | Ctrl+T body/headers | Enter open response | y copy response | PgUp/PgDn scroll | q quit",
+            match app.kind {
+                Kind::Http => HELP_REST,
+                Kind::Grpc => HELP_GRPC,
+            },
             Style::new().fg(Color::DarkGray),
         ),
     };

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id as \"id!\", method, url, status FROM history ORDER BY id DESC LIMIT ?",
+  "query": "SELECT id as \"id!\", kind, method, url, status FROM history ORDER BY id DESC LIMIT ?",
   "describe": {
     "columns": [
       {
@@ -15,8 +15,19 @@
         }
       },
       {
-        "name": "method",
+        "name": "kind",
         "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "history",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "method",
+        "ordinal": 2,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -27,7 +38,7 @@
       },
       {
         "name": "url",
-        "ordinal": 2,
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -38,7 +49,7 @@
       },
       {
         "name": "status",
-        "ordinal": 3,
+        "ordinal": 4,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -55,8 +66,9 @@
       false,
       false,
       false,
+      false,
       true
     ]
   },
-  "hash": "2ac2bf14a0bb6ba212bdc13848a01013858640c660dffeeaba2e6bec20c5f7b3"
+  "hash": "311cf40d741e561b5cae1b1aee588cadb7ab46d805cfa1db8175a48cf4692ef0"
 }

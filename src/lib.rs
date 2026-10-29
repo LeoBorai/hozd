@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
-use crate::client::HttpClient;
+use crate::client::{ReqwestClient, TonicGrpc};
 use crate::config::Config;
 use crate::history::History;
 use crate::paths::Home;
@@ -30,13 +30,14 @@ pub async fn run() -> anyhow::Result<()> {
 /// database (created and migrated) and templates.
 pub async fn startup(home: &Home) -> anyhow::Result<(App, UnboundedReceiver<Msg>)> {
     home.ensure()?;
-    let _config = Config::load(&home.config_path())?;
+    let config = Config::load(&home.config_path())?;
     let history = History::open(&home.db_path())
         .await
         .with_context(|| format!("cannot open history at {}", home.db_path().display()))?;
     let projects = load_projects(&home.projects_dir());
 
     let (tx, rx) = unbounded_channel();
-    let app = App::new(Arc::new(HttpClient::new()), history, projects, tx);
+    let grpc = Arc::new(TonicGrpc::new(config.proto_include_dirs(home.root())));
+    let app = App::new(Arc::new(ReqwestClient::new()), grpc, history, projects, tx);
     Ok((app, rx))
 }

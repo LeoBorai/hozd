@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use hozd::client::{Header, Method, Request, Response};
+use hozd::client::{Header, HttpRequest, HttpResponse, Method, Request};
 use hozd::history::{History, Outcome};
 use hozd::paths::Home;
 use hozd::startup;
@@ -72,12 +72,12 @@ async fn history_survives_restart_and_can_be_replayed() {
 
     // first run: send for real through the app
     let (mut app, mut rx) = startup(&home).await.unwrap();
-    app.load_request(&Request {
+    app.load_request(&Request::Http(HttpRequest {
         method: Method::Post,
         url: server.uri(),
         headers: vec![Header::new("X-T", "1")],
         body: Some("{\"a\":1}".into()),
-    });
+    }));
     app.send();
     wait(&mut app, &mut rx, |a| {
         a.live.is_some() && a.history.len() == 1
@@ -96,8 +96,11 @@ async fn history_survives_restart_and_can_be_replayed() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(entry.request.url, server.uri());
-    let Outcome::Response(Response { status, body, .. }) = &entry.outcome else {
+    let Request::Http(request) = &entry.request else {
+        panic!("expected an HTTP request");
+    };
+    assert_eq!(request.url, server.uri());
+    let Outcome::Response(HttpResponse { status, body, .. }) = &entry.outcome else {
         panic!("expected response");
     };
     assert_eq!((*status, body.as_str()), (201, "made"));

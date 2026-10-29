@@ -1,7 +1,8 @@
-//! The big reading panel for a response body.
+//! The big reading panel, for a response body or the log.
 
 use std::cell::{Cell, RefCell};
 
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
@@ -42,6 +43,7 @@ struct Wrapped {
 
 /// A response body open for reading. Starts as received; `F` toggles a formatted view.
 pub struct Modal {
+    title: &'static str,
     raw: String,
     formatted: Option<String>,
     show_formatted: bool,
@@ -51,13 +53,25 @@ pub struct Modal {
     /// rows a page is.
     max_scroll: Cell<usize>,
     page: Cell<usize>,
+    /// Mouse selection as (anchor, head), each (wrapped row, display column).
+    selection: Option<((usize, usize), (usize, usize))>,
     wrapped: RefCell<Option<Wrapped>>,
 }
 
 impl Modal {
     pub fn new(raw: String) -> Self {
         let kind = Kind::detect(&raw);
+        Self::with("Response body", raw, kind)
+    }
+
+    /// Plain text under a custom title; never formatted.
+    pub fn text(title: &'static str, raw: String) -> Self {
+        Self::with(title, raw, Kind::Text)
+    }
+
+    fn with(title: &'static str, raw: String, kind: Kind) -> Self {
         Self {
+            title,
             raw,
             formatted: None,
             show_formatted: false,
@@ -65,8 +79,13 @@ impl Modal {
             scroll: 0,
             max_scroll: Cell::new(0),
             page: Cell::new(1),
+            selection: None,
             wrapped: RefCell::new(None),
         }
+    }
+
+    pub fn title(&self) -> &'static str {
+        self.title
     }
 
     pub fn kind(&self) -> Kind {
@@ -101,8 +120,65 @@ impl Modal {
             self.show_formatted = true;
         }
         self.scroll = 0;
+        self.selection = None;
         *self.wrapped.borrow_mut() = None;
         Ok(())
+    }
+
+    /// The first visible row; `scroll` may exceed the end until the next render.
+    pub fn top(&self) -> usize {
+        self.scroll.min(self.max_scroll.get())
+    }
+
+    /// Starts a selection at a cell of the viewport (0-based, relative to its corner).
+    pub fn select_start(&mut self, x: usize, y: usize) {
+        let at = (self.top() + y, x);
+        self.selection = Some((at, at));
+    }
+
+    /// Extends the selection to a cell of the viewport.
+    pub fn select_to(&mut self, x: usize, y: usize) {
+        let head = (self.top() + y, x);
+        if let Some((_, h)) = &mut self.selection {
+            *h = head;
+        }
+    }
+
+    /// True once the pointer moved off the cell where the selection started.
+    pub fn has_range(&self) -> bool {
+        self.selection.is_some_and(|(a, b)| a != b)
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
+    /// Per wrapped row, the display columns `[from, to)` that are selected.
+    pub fn selected_cols(&self, row: usize) -> Option<(usize, usize)> {
+        let (a, b) = self.selection?;
+        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+        if row < start.0 || row > end.0 {
+            return None;
+        }
+        let from = if row == start.0 { start.1 } else { 0 };
+        let to = if row == end.0 { end.1 + 1 } else { usize::MAX };
+        Some((from, to))
+    }
+
+    /// The selected text, rows joined by newlines; `None` when nothing is selected.
+    pub fn selected_text(&self) -> Option<String> {
+        let (a, b) = self.selection?;
+        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+        let cache = self.wrapped.borrow();
+        let lines = &cache.as_ref()?.lines;
+        let rows: Vec<String> = (start.0..=end.0.min(lines.len().checked_sub(1)?))
+            .filter_map(|r| {
+                let (from, to) = self.selected_cols(r)?;
+                Some(slice_cols(lines.get(r)?, from, to))
+            })
+            .collect();
+        let text = rows.join("\n");
+        (!text.trim().is_empty()).then_some(text)
     }
 
     pub fn scroll_by(&mut self, delta: isize) {
@@ -152,6 +228,55 @@ impl Modal {
         self.max_scroll.set(total_rows.saturating_sub(height));
         self.page.set(height.saturating_sub(1).max(1));
     }
+}
+
+/// The text of `line` whose cells start in display columns `[from, to)`.
+fn slice_cols(line: &Line<'static>, from: usize, to: usize) -> String {
+    let mut out = String::new();
+    let mut col = 0;
+    for c in line.spans.iter().flat_map(|s| s.content.chars()) {
+        if col >= from && col < to {
+            out.push(c);
+        }
+        col += c.width().unwrap_or(0);
+    }
+    out.trim_end().to_owned()
+}
+
+/// `line` with the cells in display columns `[from, to)` shown reversed.
+pub fn reverse_cols(line: Line<'static>, from: usize, to: usize) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut col = 0;
+    for span in line.spans {
+        let mut run = String::new();
+        let mut run_selected = false;
+        for c in span.content.chars() {
+            let selected = col >= from && col < to;
+            if selected != run_selected && !run.is_empty() {
+                spans.push(styled_run(
+                    std::mem::take(&mut run),
+                    span.style,
+                    run_selected,
+                ));
+            }
+            run_selected = selected;
+            run.push(c);
+            col += c.width().unwrap_or(0);
+        }
+        if !run.is_empty() {
+            spans.push(styled_run(run, span.style, run_selected));
+        }
+    }
+    Line::from(spans).style(line.style)
+}
+
+fn styled_run(text: String, style: ratatui::style::Style, selected: bool) -> Span<'static> {
+    let style = if selected {
+        style.add_modifier(Modifier::REVERSED)
+    } else {
+        style
+    };
+    Span::styled(text, style)
 }
 
 /// Splits a styled line into rows of at most `width` display columns, keeping styles.
@@ -205,6 +330,34 @@ mod tests {
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
+    }
+
+    #[test]
+    fn selection_covers_the_dragged_cells_across_rows() {
+        let mut m = Modal::text("t", "hello world\nsecond line".into());
+        m.with_lines(40, |_| ());
+        m.select_start(6, 0);
+        m.select_to(2, 1);
+        assert_eq!(m.selected_text().unwrap(), "world\nsec");
+        // dragging backwards selects the same cells
+        m.select_start(2, 1);
+        m.select_to(6, 0);
+        assert_eq!(m.selected_text().unwrap(), "world\nsec");
+        m.clear_selection();
+        assert!(m.selected_text().is_none());
+    }
+
+    #[test]
+    fn reversing_columns_splits_spans_and_keeps_text() {
+        let line = reverse_cols(Line::raw("abcdef"), 2, 4);
+        assert_eq!(text(std::slice::from_ref(&line)), ["abcdef"]);
+        let reversed: Vec<_> = line
+            .spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::REVERSED))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(reversed, ["cd"]);
     }
 
     #[test]
