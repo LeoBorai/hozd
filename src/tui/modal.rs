@@ -13,6 +13,8 @@ pub enum Kind {
     Json,
     Html,
     Text,
+    /// The app log; colored per line, see [`super::log`].
+    Log,
 }
 
 impl Kind {
@@ -31,6 +33,7 @@ impl Kind {
             Kind::Json => "JSON",
             Kind::Html => "HTML",
             Kind::Text => "text",
+            Kind::Log => "log",
         }
     }
 }
@@ -64,9 +67,9 @@ impl Modal {
         Self::with("Response body", raw, kind)
     }
 
-    /// Plain text under a custom title; never formatted.
-    pub fn text(title: &'static str, raw: String) -> Self {
-        Self::with(title, raw, Kind::Text)
+    /// The log text from [`super::log::Log::to_text`] under `title`; never formatted.
+    pub fn log(title: &'static str, raw: String) -> Self {
+        Self::with(title, raw, Kind::Log)
     }
 
     fn with(title: &'static str, raw: String, kind: Kind) -> Self {
@@ -114,7 +117,9 @@ impl Modal {
                 self.formatted = Some(match self.kind {
                     Kind::Json => json::try_pretty(&self.raw).unwrap_or_else(|| self.raw.clone()),
                     Kind::Html => html::format(&self.raw),
-                    Kind::Text => return Err("not JSON or HTML, nothing to format".into()),
+                    Kind::Text | Kind::Log => {
+                        return Err("not JSON or HTML, nothing to format".into());
+                    }
                 });
             }
             self.show_formatted = true;
@@ -211,6 +216,7 @@ impl Modal {
                     Kind::Json => json::highlight_line(l),
                     Kind::Html => html::highlight_line(l),
                     Kind::Text => Line::raw(l.to_owned()),
+                    Kind::Log => super::log::highlight_line(l),
                 })
                 .flat_map(|l| wrap_line(l, width))
                 .collect();
@@ -334,7 +340,7 @@ mod tests {
 
     #[test]
     fn selection_covers_the_dragged_cells_across_rows() {
-        let mut m = Modal::text("t", "hello world\nsecond line".into());
+        let mut m = Modal::log("t", "hello world\nsecond line".into());
         m.with_lines(40, |_| ());
         m.select_start(6, 0);
         m.select_to(2, 1);
