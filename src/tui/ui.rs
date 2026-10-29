@@ -8,7 +8,7 @@ use ratatui::widgets::{
 use ratatui_textarea::TextArea;
 
 use super::app::{App, Focus, RequestTab, SchemaMode, Tab};
-use super::headers;
+use super::headers::{self, Col};
 use super::json::{highlight_line, pretty};
 use super::log::message_color;
 use crate::client::{Kind, Method, SchemaSource, status_name};
@@ -290,6 +290,44 @@ pub fn editor_scroll(cursor: (usize, usize), area: Rect) -> (usize, usize) {
             .1
             .saturating_sub((area.width as usize).saturating_sub(1)),
     )
+}
+
+/// The inputs of one header row.
+#[derive(Debug, Clone, Copy)]
+pub struct HeaderCells {
+    pub row: usize,
+    pub name: Rect,
+    pub value: Rect,
+}
+
+/// Where the header rows are drawn inside the request box.
+pub struct HeaderGrid {
+    pub rows: Vec<HeaderCells>,
+    /// The "add header" line, when it is in view.
+    pub add: Option<Rect>,
+}
+
+/// Lays out `count` header rows (name and value side by side, split by a `:`) followed by
+/// an "add header" line, scrolled so that `selected` is in view.
+pub fn header_grid(inner: Rect, count: usize, selected: usize) -> HeaderGrid {
+    let height = inner.height as usize;
+    let offset = list_offset(Some(selected), inner.height);
+    let name_width = (inner.width * 2 / 5).clamp(1, inner.width.saturating_sub(4).max(1));
+    let value_x = inner.x + name_width + 2;
+    let value_width = inner.right().saturating_sub(value_x);
+    let rows = (offset..count.min(offset + height))
+        .map(|row| {
+            let y = inner.y + (row - offset) as u16;
+            HeaderCells {
+                row,
+                name: Rect::new(inner.x, y, name_width, 1),
+                value: Rect::new(value_x, y, value_width, 1),
+            }
+        })
+        .collect();
+    let add = (count >= offset && count < offset + height)
+        .then(|| Rect::new(inner.x, inner.y + (count - offset) as u16, inner.width, 1));
+    HeaderGrid { rows, add }
 }
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -895,21 +933,72 @@ fn draw_request_box(
             app.focus == Focus::Body,
             Syntax::Json,
         ),
-        (RequestTab::Headers, false) => render_editor(
-            frame,
-            &app.headers,
-            body_inner,
-            app.focus == Focus::Headers,
-            Syntax::Headers,
-        ),
+        (RequestTab::Headers, false) => draw_header_rows(frame, app, body_inner),
+    }
+}
+
+/// The header inputs: name `:` value, one row each, then the "add header" line.
+fn draw_header_rows(frame: &mut Frame, app: &App, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let editor = &app.headers;
+    let focused = app.focus == Focus::Headers;
+    let grid = header_grid(area, editor.rows.len(), editor.row);
+    for cells in &grid.rows {
+        let row = &editor.rows[cells.row];
+        let sep = Rect::new(cells.name.right(), cells.name.y, 1, 1);
+        frame.render_widget(
+            Paragraph::new(Span::styled(":", Style::new().fg(Color::DarkGray))),
+            sep,
+        );
+        for (rect, col, ta, placeholder) in [
+            (cells.name, Col::Name, &row.name, "Name"),
+            (cells.value, Col::Value, &row.value, "Value"),
+        ] {
+            let here = focused && cells.row == editor.row && col == editor.col;
+            if here {
+                frame.render_widget(
+                    Block::default().style(Style::new().bg(Color::DarkGray)),
+                    rect,
+                );
+            }
+            if ta.lines()[0].is_empty() && !here {
+                frame.render_widget(
+                    Paragraph::new(Line::styled(placeholder, Style::new().fg(Color::DarkGray))),
+                    rect,
+                );
+                continue;
+            }
+            let syntax = if col == Col::Name {
+                if headers::name_is_invalid(row) {
+                    Syntax::Invalid
+                } else {
+                    Syntax::HeaderName
+                }
+            } else {
+                Syntax::Plain
+            };
+            render_editor(frame, ta, rect, here, syntax);
+        }
+    }
+    if let Some(rect) = grid.add {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "+ add header (Enter on the last value, Ctrl+D removes a row)",
+                Style::new().fg(Color::DarkGray),
+            )),
+            rect,
+        );
     }
 }
 
 #[derive(Clone, Copy)]
 enum Syntax {
+    HeaderName,
+    Invalid,
     Plain,
     Json,
-    Headers,
 }
 
 /// Draws a `TextArea`'s lines ourselves (it has no syntax-highlight hook) and places
@@ -933,7 +1022,8 @@ fn render_editor(
         .iter()
         .map(|l| match syntax {
             Syntax::Json => highlight_line(l),
-            Syntax::Headers => headers::highlight_line(l),
+            Syntax::HeaderName => Line::styled(l.clone(), Style::new().fg(Color::Cyan)),
+            Syntax::Invalid => Line::styled(l.clone(), Style::new().fg(Color::Red)),
             Syntax::Plain => Line::raw(l.clone()),
         })
         .collect();
