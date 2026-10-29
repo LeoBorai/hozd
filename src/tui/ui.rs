@@ -10,7 +10,7 @@ use ratatui_textarea::TextArea;
 use super::app::{App, Focus, RequestTab, SchemaMode, Tab};
 use super::headers;
 use super::json::{highlight_line, pretty};
-use super::log::Level;
+use super::log::message_color;
 use crate::client::{Kind, Method, SchemaSource, status_name};
 use crate::history::Outcome;
 use crate::project::TemplateKind;
@@ -406,9 +406,7 @@ fn draw_modal(frame: &mut Frame, modal: &super::modal::Modal, screen: Rect) {
     let title = Line::from(vec![
         Span::styled(
             match modal.kind() {
-                super::modal::Kind::Text if modal.title() != "Response body" => {
-                    format!(" {} ", modal.title())
-                }
+                super::modal::Kind::Log => format!(" {} ", modal.title()),
                 kind => format!(" {} - {} ({view}) ", modal.title(), kind.label()),
             },
             Style::new().add_modifier(Modifier::BOLD),
@@ -486,15 +484,7 @@ fn draw_log(frame: &mut Frame, app: &App, area: Rect) {
         .rev()
         .take(inner.height as usize)
         .map(|e| {
-            let color = match e.level {
-                Level::Info => Color::Reset,
-                Level::Error => Color::Red,
-                Level::Detail => match e.message.chars().next() {
-                    Some('>') => Color::Cyan,
-                    Some('<') => Color::Green,
-                    _ => Color::DarkGray,
-                },
-            };
+            let color = message_color(e.level, &e.message);
             Line::from(vec![
                 Span::styled(format!("{} ", e.time), Style::new().fg(Color::DarkGray)),
                 Span::styled(e.message.clone(), Style::new().fg(color)),
