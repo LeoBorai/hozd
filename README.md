@@ -34,6 +34,16 @@ Installs the latest release for Linux (glibc) or macOS, x86_64 or aarch64, into
 On Windows download the `.zip` from the releases page. Elsewhere (for example Alpine),
 build from source: `cargo install --git https://github.com/LeoBorai/hozd hozd`.
 
+### Give it a try
+
+#### gRPC
+
+You can leverage this site https://grpcb.in for testing the gRPC client.
+
+#### REST
+
+You can use the good ol' https://httpbin.org for testing the REST client.
+
 ## Data: `~/.hozd`
 
 Override the location with `HOZD_HOME`.
