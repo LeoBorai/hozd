@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id as \"id!\", created_at_ms, method, url, request_headers, request_body,\n                      status, response_headers, response_body, elapsed_ms, error\n               FROM history WHERE id = ?",
+  "query": "SELECT id as \"id!\", created_at_ms, kind, method, url, request_headers, request_body,\n                      status, response_headers, response_body, elapsed_ms, error, grpc\n               FROM history WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -26,8 +26,19 @@
         }
       },
       {
-        "name": "method",
+        "name": "kind",
         "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "history",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "method",
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -38,7 +49,7 @@
       },
       {
         "name": "url",
-        "ordinal": 3,
+        "ordinal": 4,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -49,7 +60,7 @@
       },
       {
         "name": "request_headers",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -60,7 +71,7 @@
       },
       {
         "name": "request_body",
-        "ordinal": 5,
+        "ordinal": 6,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -71,7 +82,7 @@
       },
       {
         "name": "status",
-        "ordinal": 6,
+        "ordinal": 7,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -82,7 +93,7 @@
       },
       {
         "name": "response_headers",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -93,7 +104,7 @@
       },
       {
         "name": "response_body",
-        "ordinal": 8,
+        "ordinal": 9,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +115,7 @@
       },
       {
         "name": "elapsed_ms",
-        "ordinal": 9,
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -115,12 +126,23 @@
       },
       {
         "name": "error",
-        "ordinal": 10,
+        "ordinal": 11,
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "history",
             "name": "error"
+          }
+        }
+      },
+      {
+        "name": "grpc",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "history",
+            "name": "grpc"
           }
         }
       }
@@ -134,6 +156,8 @@
       false,
       false,
       false,
+      false,
+      true,
       true,
       true,
       true,
@@ -142,5 +166,5 @@
       true
     ]
   },
-  "hash": "a1466821f50ed450a22bfff8e7c3cd6a7f0c634a4ec90e509277cca4a80cdfaa"
+  "hash": "ca5394984b3a862e2ae940eacda38017d3f0c185a3ace37f5b354152042cd310"
 }

@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package demo.v1;
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_ADMIN = 1;
+}
+
+message Address {
+  string city = 1;
+}

@@ -2,17 +2,32 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 
-use super::{Client, ClientError, Header, Method, Request, Response};
+use super::trace::version_name;
+use super::{
+    ClientError, Header, HttpClient, HttpRequest, HttpResponse, Method, Trace, trace_certificate,
+    trace_resolve,
+};
 
 /// Plain HTTP(S) client on top of `reqwest`.
-#[derive(Clone, Default)]
-pub struct HttpClient {
+#[derive(Clone)]
+pub struct ReqwestClient {
     inner: reqwest::Client,
 }
 
-impl HttpClient {
+impl ReqwestClient {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            inner: reqwest::Client::builder()
+                .tls_info(true)
+                .build()
+                .unwrap_or_default(),
+        }
+    }
+}
+
+impl Default for ReqwestClient {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -31,12 +46,25 @@ impl From<Method> for reqwest::Method {
 }
 
 #[async_trait]
-impl Client for HttpClient {
-    async fn send(&self, request: &Request) -> Result<Response, ClientError> {
+impl HttpClient for ReqwestClient {
+    async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, ClientError> {
+        self.send_traced(request, &Trace::none()).await
+    }
+
+    async fn send_traced(
+        &self,
+        request: &HttpRequest,
+        trace: &Trace,
+    ) -> Result<HttpResponse, ClientError> {
         let url = reqwest::Url::parse(request.url.trim())
             .map_err(|e| ClientError::InvalidUrl(format!("{}: {e}", request.url)))?;
 
-        let mut builder = self.inner.request(request.method.into(), url);
+        if let Some(host) = url.host_str() {
+            let port = url.port_or_known_default().unwrap_or(80);
+            trace_resolve(trace, host, port).await;
+        }
+
+        let mut builder = self.inner.request(request.method.into(), url.clone());
         for h in &request.headers {
             builder = builder.header(&h.name, &h.value);
         }
@@ -50,6 +78,8 @@ impl Client for HttpClient {
             .await
             .map_err(|e| ClientError::Transport(describe(&e)))?;
 
+        trace_exchange(trace, request, &url, &res);
+
         let status = res.status().as_u16();
         let headers = res
             .headers()
@@ -61,13 +91,64 @@ impl Client for HttpClient {
             .await
             .map_err(|e| ClientError::Transport(describe(&e)))?;
 
-        Ok(Response {
+        Ok(HttpResponse {
             status,
             headers,
             body,
             elapsed: started.elapsed(),
         })
     }
+}
+
+/// Reports the connection, what was sent and what came back, in curl `-v` form.
+fn trace_exchange(
+    trace: &Trace,
+    request: &HttpRequest,
+    url: &reqwest::Url,
+    res: &reqwest::Response,
+) {
+    let host = url.host_str().unwrap_or_default();
+    let port = url.port_or_known_default().unwrap_or(80);
+    let version = version_name(res.version());
+    if let Some(addr) = res.remote_addr() {
+        trace.emit(format!("* Connected to {host} ({}) port {port}", addr.ip()));
+    }
+    if url.scheme() == "https" {
+        if let Some(der) = res
+            .extensions()
+            .get::<reqwest::tls::TlsInfo>()
+            .and_then(|t| t.peer_certificate())
+        {
+            trace_certificate(trace, der);
+        }
+        trace.emit("*  SSL certificate verify ok.");
+    }
+    if res.version() == reqwest::Version::HTTP_2 {
+        trace.emit("* ALPN: server accepted h2");
+    }
+    trace.emit(format!("* using {version}"));
+
+    let target = match url.query() {
+        Some(query) => format!("{}?{query}", url.path()),
+        None => url.path().to_owned(),
+    };
+    trace.emit(format!("> {} {target} {version}", request.method));
+    trace.emit(format!("> Host: {host}"));
+    for h in &request.headers {
+        trace.emit(format!("> {}: {}", h.name, h.value));
+    }
+    trace.emit(">");
+    if let Some(body) = &request.body {
+        trace.emit(format!("* Request body: {} bytes", body.len()));
+    }
+    trace.emit(format!("< {version} {}", res.status().as_u16()));
+    for (name, value) in res.headers() {
+        trace.emit(format!(
+            "< {name}: {}",
+            String::from_utf8_lossy(value.as_bytes())
+        ));
+    }
+    trace.emit("<");
 }
 
 const NOT_HTTP_HINT: &str = "the server did not answer with HTTP/1.x. Likely causes: an HTTPS port \

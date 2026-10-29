@@ -2,7 +2,7 @@ mod template;
 
 use std::path::{Path, PathBuf};
 
-pub use template::{Template, TemplateError};
+pub use template::{GrpcTemplate, HttpTemplate, Template, TemplateError, TemplateKind};
 
 /// A project: one directory under `projects/` holding request templates.
 #[derive(Debug, Clone, PartialEq)]

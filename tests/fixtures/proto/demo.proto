@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package demo.v1;
+
+import "common.proto";
+import "google/protobuf/timestamp.proto";
+
+service Demo {
+  rpc GetUser(GetUserRequest) returns (User);
+  rpc ListUsers(ListUsersRequest) returns (stream User);
+  rpc Collect(stream GetUserRequest) returns (Summary);
+  rpc Chat(stream ChatMessage) returns (stream ChatMessage);
+  rpc Tree(Node) returns (Node);
+  rpc Create(User) returns (User);
+}
+
+message GetUserRequest {
+  int64 id = 1;
+}
+
+message ListUsersRequest {
+  string name = 1;
+  int32 page_size = 2;
+  // Milliseconds to wait before each streamed message.
+  int32 delay_ms = 3;
+}
+
+message User {
+  int64 id = 1;
+  string name = 2;
+  Role role = 3;
+  google.protobuf.Timestamp created_at = 4;
+  Address address = 5;
+}
+
+message Summary {
+  int32 count = 1;
+}
+
+message ChatMessage {
+  string text = 1;
+}
+
+message Node {
+  string name = 1;
+  Node child = 2;
+}

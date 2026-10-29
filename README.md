@@ -1,7 +1,8 @@
 # hozd
 
-A terminal HTTP client in the spirit of cURL, with a lazygit/lazydocker-style TUI.
-Built on [reqwest](https://docs.rs/reqwest) and [ratatui](https://ratatui.rs).
+A terminal HTTP and gRPC client in the spirit of cURL and grpcurl, with a
+lazygit/lazydocker-style TUI. Built on [reqwest](https://docs.rs/reqwest),
+[tonic](https://docs.rs/tonic) and [ratatui](https://ratatui.rs).
 
 ```
 +-----------+-----------------------------+-----------+
@@ -64,6 +65,46 @@ body = '''
 Content-Type = "application/json"
 ```
 
+A template without `kind` is an HTTP template. Add `kind = "grpc"` for a gRPC one:
+
+```toml
+name = "Get user"
+kind = "grpc"
+address = "http://localhost:50051"
+method = "user.v1.UserService/GetUser"
+reflection = true
+body = '''
+{ "id": 7 }
+'''
+
+[metadata]
+authorization = "Bearer token"
+```
+
+| Key          | Meaning                                                                      |
+| ------------ | ---------------------------------------------------------------------------- |
+| `address`    | Server address with a scheme: `http://` is plaintext, `https://` is TLS      |
+| `method`     | `package.Service/Method`                                                     |
+| `reflection` | `true` to ask the server for its schema (`v1`, falling back to `v1alpha`)    |
+| `schema`     | Alternative to `reflection`: path of a `.proto` file or a compiled descriptor set (`.bin`, `.pb`, `.desc`), relative to the template file |
+| `insecure`   | `true` to skip TLS certificate verification (self-signed development servers) |
+| `[metadata]` | gRPC request metadata, like HTTP headers                                     |
+| `body`       | A JSON object; for client and bidirectional streaming a JSON array, one element per message |
+
+Set exactly one of `reflection` and `schema`. A `.proto` file is compiled by hozd itself, no
+`protoc` needed; a descriptor set is what `protoc --include_imports --descriptor_set_out=`
+writes.
+
+### `config.toml`
+
+Optional. Every setting has a default.
+
+```toml
+# Extra directories searched for `.proto` imports, after the directory of the loaded file.
+# `~` is your home directory; relative paths are relative to ~/.hozd.
+proto_include = ["~/work/protos"]
+```
+
 ## Keys
 
 | Key               | Action                                   |
@@ -75,11 +116,50 @@ Content-Type = "application/json"
 | `Enter`           | Load the selected entry into the editor (list); send (URL field) |
 | `Ctrl+S`          | Send the request                         |
 | `Ctrl+N` / `Ctrl+P` | Next / previous HTTP method            |
-| `Ctrl+T`          | Switch the request box between Body and Headers |
+| `Ctrl+T`          | Switch the request box between Body and Headers (Metadata in gRPC) |
+| `Ctrl+G`          | Switch the request between REST and gRPC |
+| Drag (reading panel) | Select text; it is copied to the clipboard on release (`y` copies the selection, or everything if none) |
+| `Ctrl+E` / click the Logs box | Open the log in the reading panel (newest last) |
 | `Enter` (response focus) | Open the response body in the reading panel |
 | `PgUp` / `PgDn`   | Scroll the response body                 |
 | `y` (list focus)  | Copy the response body to the clipboard  |
 | `q` / `Ctrl+C`    | Quit                                     |
+
+### gRPC
+
+`Ctrl+G` (or a click on `REST | gRPC` on the address box) switches the request to gRPC. The
+URL becomes the server address and the headers become metadata; body and headers carry over.
+Three more boxes appear: the schema source, the method, and the TLS state.
+
+1. Type the server address with a scheme: `http://` is plaintext, `https://` is TLS verified
+   against the system trust store.
+2. Choose where the schema comes from and load it with `Ctrl+L` (or `Enter` in the Schema
+   box): **reflection** (the server describes itself, `v1` then `v1alpha`) or **a file**
+   (`Ctrl+O` toggles): a `.proto` source, compiled by hozd, or a compiled descriptor set
+   (`.bin`, `.pb`, `.desc`). Import roots beyond the file's own directory go in
+   `proto_include` of `config.toml`. Sending without loading loads it first. The loaded
+   schema is kept for that address and source.
+3. Pick the method with `Ctrl+N` / `Ctrl+P`, `Enter` in the Method box, or a click. Type to
+   filter. An empty body is filled with a skeleton of the input message.
+4. `Ctrl+S` sends. Unary and server streaming take a JSON object; client and bidirectional
+   streaming take a JSON array, one element per message, sent in one go. Responses stream
+   in as they arrive, numbered; `Ctrl+X` cancels the call (status `CANCELLED`).
+
+`Ctrl+K` (or a click on the TLS box) turns on **insecure** mode, which skips certificate
+verification for self-signed development servers; the address box then says `NOT VERIFIED`.
+The copy action and the reading panel give the single message of a unary or client streaming
+call, and a JSON array of all messages for server and bidirectional streaming.
+
+| Key (gRPC mode)     | Action                                                |
+| ------------------- | ----------------------------------------------------- |
+| `Ctrl+L`            | Load the schema for the current address and source    |
+| `Ctrl+O`            | Schema source: reflection / file                      |
+| `Ctrl+N` / `Ctrl+P` | Open the method picker                                |
+| `Ctrl+K`            | Toggle insecure TLS                                   |
+| `Ctrl+X`            | Cancel the call in flight                             |
+| picker: `Up` `Down` `Enter` `Esc` | Move, pick, close; typing filters        |
+
+`Ctrl+X` also shadows the text editors' cut shortcut.
 
 ### Mouse
 
@@ -87,7 +167,9 @@ Content-Type = "application/json"
 | ------------------------------ | --------------------------------------------------- |
 | `Stored` / `History` tab       | Switch tab                                          |
 | List item                      | Select and preview; click again to load into editor |
-| Method box                     | Next method (right-click: previous)                 |
+| Method box                     | Next method (right-click: previous); TLS box in gRPC toggles insecure |
+| `REST` / `gRPC` label          | Switch the request kind                             |
+| Schema / Method box (gRPC)     | Focus the schema box / open the method picker       |
 | URL / body / headers           | Focus the editor and place the cursor               |
 | `Body` / `Headers` title       | Switch the request tab                              |
 | Wheel over the list            | Move the selection                                  |
