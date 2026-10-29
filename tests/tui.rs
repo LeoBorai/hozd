@@ -197,6 +197,55 @@ async fn dragging_in_the_reading_panel_selects_and_copies() {
 }
 
 #[tokio::test]
+async fn the_schema_file_input_suggests_paths_and_tab_accepts() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("demo.proto"), "").unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "").unwrap();
+    std::fs::create_dir(dir.path().join("deps")).unwrap();
+    let root = dir.path().to_str().unwrap().to_owned();
+
+    let mut h = harness().await;
+    h.app.handle_key(ctrl('g'));
+    h.app.handle_key(ctrl('o')); // file mode, focus on the path input
+    assert_eq!(h.app.focus, Focus::Schema);
+    type_text(&mut h.app, &format!("{root}/d"));
+
+    let shown: Vec<&str> = h
+        .app
+        .suggestions
+        .items
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect();
+    assert_eq!(
+        shown,
+        [format!("{root}/deps/"), format!("{root}/demo.proto")]
+    );
+    assert!(text(&render(&h.app, 120, 30)).contains("demo.proto"));
+
+    // Down moves onto the list, Tab accepts that one instead of leaving the input
+    h.app.handle_key(key(KeyCode::Down));
+    h.app.handle_key(key(KeyCode::Down));
+    h.app.handle_key(key(KeyCode::Tab));
+    assert_eq!(h.app.schema_path_text(), format!("{root}/demo.proto"));
+    assert_eq!(h.app.focus, Focus::Schema);
+    assert!(
+        h.app.suggestions.items.is_empty(),
+        "nothing left to suggest"
+    );
+
+    // with no suggestions Tab moves on as usual
+    h.app.handle_key(key(KeyCode::Tab));
+    assert_ne!(h.app.focus, Focus::Schema);
+
+    // leaving the input hides the list
+    h.app.handle_key(key(KeyCode::BackTab));
+    type_text(&mut h.app, "x");
+    h.app.handle_key(key(KeyCode::Esc));
+    assert!(h.app.suggestions.items.is_empty());
+}
+
+#[tokio::test]
 async fn left_panel_has_both_tabs_and_empty_hints() {
     let mut h = harness().await;
     let out = text(&render(&h.app, 120, 30));

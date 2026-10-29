@@ -9,6 +9,7 @@ use ratatui_textarea::{CursorMove, Input, TextArea};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
+use super::complete::{self, Suggestion};
 use super::headers::{Col, HeaderEditor};
 use super::json::pretty;
 use super::log::{Level, Log};
@@ -168,6 +169,14 @@ pub struct View<'a> {
     pub previewing: bool,
 }
 
+/// The path suggestions of the schema file input.
+#[derive(Debug, Default)]
+pub struct Suggestions {
+    pub items: Vec<Suggestion>,
+    /// The highlighted suggestion, once the user moved onto the list.
+    pub sel: Option<usize>,
+}
+
 pub struct App {
     pub tab: Tab,
     pub focus: Focus,
@@ -188,6 +197,10 @@ pub struct App {
     pub schema_mode: SchemaMode,
     /// gRPC editor: the `.proto` or descriptor set file used when `schema_mode` is `File`.
     pub schema_path: TextArea<'static>,
+    /// Completions for `schema_path`, shown under the Schema box while it has focus.
+    pub suggestions: Suggestions,
+    /// The path text `suggestions` were computed for.
+    suggested_for: Option<String>,
     /// gRPC editor: skip TLS certificate verification.
     pub insecure: bool,
     /// gRPC editor: the `package.Service/Method` to call.
@@ -269,6 +282,8 @@ impl App {
             request_tab: RequestTab::Body,
             schema_mode: SchemaMode::Reflection,
             schema_path: single_line(""),
+            suggestions: Suggestions::default(),
+            suggested_for: None,
             insecure: false,
             selected_method: None,
             schema: None,
@@ -544,6 +559,11 @@ impl App {
     // ---- input ---------------------------------------------------------
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        self.handle_key_event(key);
+        self.refresh_suggestions();
+    }
+
+    fn handle_key_event(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
             return;
         }
@@ -554,6 +574,10 @@ impl App {
         }
         if self.picker.is_some() {
             return self.picker_key(key.code, ctrl);
+        }
+
+        if self.focus == Focus::Schema && self.suggestions_open() && self.suggestion_key(key.code) {
+            return;
         }
 
         match (key.code, ctrl) {
@@ -605,6 +629,70 @@ impl App {
             Focus::Method => self.method_key(key.code),
             Focus::Response => self.response_key(key.code),
         }
+    }
+
+    fn suggestions_open(&self) -> bool {
+        !self.suggestions.items.is_empty()
+    }
+
+    /// Keys that work on the suggestions; `false` when the key is not one of them.
+    fn suggestion_key(&mut self, code: KeyCode) -> bool {
+        let count = self.suggestions.items.len();
+        match code {
+            KeyCode::Down => {
+                self.suggestions.sel =
+                    Some(self.suggestions.sel.map_or(0, |i| (i + 1).min(count - 1)));
+            }
+            KeyCode::Up => {
+                self.suggestions.sel = match self.suggestions.sel {
+                    None | Some(0) => None,
+                    Some(i) => Some(i - 1),
+                };
+            }
+            KeyCode::Tab => self.accept_suggestion(self.suggestions.sel.unwrap_or(0)),
+            KeyCode::Enter if self.suggestions.sel.is_some() => {
+                self.accept_suggestion(self.suggestions.sel.unwrap_or(0));
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Replaces the input with suggestion `index`; a directory keeps the suggestions open on
+    /// its content.
+    pub fn accept_suggestion(&mut self, index: usize) {
+        let Some(suggestion) = self.suggestions.items.get(index) else {
+            return;
+        };
+        self.schema_path = single_line(&suggestion.text.clone());
+        self.suggestions = Suggestions::default();
+        self.suggested_for = None;
+    }
+
+    /// Recomputes the suggestions when the schema path changed; they only exist while the
+    /// file input has focus.
+    fn refresh_suggestions(&mut self) {
+        let active = self.kind == Kind::Grpc
+            && self.schema_mode == SchemaMode::File
+            && self.focus == Focus::Schema
+            && self.modal.is_none()
+            && self.picker.is_none();
+        if !active {
+            self.suggestions = Suggestions::default();
+            self.suggested_for = None;
+            return;
+        }
+        let text = self.schema_path_text();
+        if self.suggested_for.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        let mut items = complete::complete(&text);
+        // the input already is that file: nothing left to suggest
+        if items.len() == 1 && items[0].text == text {
+            items.clear();
+        }
+        self.suggested_for = Some(text);
+        self.suggestions = Suggestions { items, sel: None };
     }
 
     fn schema_input(&mut self, key: KeyEvent) {
@@ -906,6 +994,11 @@ impl App {
 
     /// `screen` is the full terminal area the UI was last drawn into.
     pub fn handle_mouse(&mut self, event: MouseEvent, screen: Rect) {
+        self.handle_mouse_event(event, screen);
+        self.refresh_suggestions();
+    }
+
+    fn handle_mouse_event(&mut self, event: MouseEvent, screen: Rect) {
         let areas = ui::areas_for(screen, self.view().request.kind);
         let at = Position::new(event.column, event.row);
         if self.picker.is_some() {
@@ -913,6 +1006,16 @@ impl App {
         }
         if self.modal.is_some() {
             return self.modal_mouse(event, screen);
+        }
+        if self.suggestions_open() {
+            let popup = ui::suggestions_area(areas.schema, self.suggestions.items.len());
+            if let (MouseEventKind::Down(MouseButton::Left), true) =
+                (event.kind, popup.contains(at))
+            {
+                let row = at.y.saturating_sub(ui::inner(popup).y) as usize;
+                let offset = ui::list_offset(self.suggestions.sel, ui::inner(popup).height);
+                return self.accept_suggestion(row + offset);
+            }
         }
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => self.click(at, &areas),

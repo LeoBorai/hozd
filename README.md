@@ -164,6 +164,7 @@ call, and a JSON array of all messages for server and bidirectional streaming.
 | ------------------- | ----------------------------------------------------- |
 | `Ctrl+L`            | Load the schema for the current address and source    |
 | `Ctrl+O`            | Schema source: reflection / file                      |
+| `Tab` / `Down` `Up` / `Enter` (file input) | Accept / move through / accept the path suggestions |
 | `Ctrl+N` / `Ctrl+P` | Open the method picker                                |
 | `Ctrl+K`            | Toggle insecure TLS                                   |
 | `Ctrl+X`            | Cancel the call in flight                             |
