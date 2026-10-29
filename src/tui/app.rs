@@ -792,7 +792,7 @@ impl App {
             self.notice = Some("the log is empty".into());
             return;
         }
-        let mut modal = Modal::text("Logs", self.log.to_text());
+        let mut modal = Modal::log("Logs", self.log.to_text());
         // opens on the newest entries; the renderer clamps this to the end
         modal.scroll = usize::MAX;
         self.modal = Some(modal);
