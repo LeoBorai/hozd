@@ -28,6 +28,10 @@ wildcards = "deny"
 skip = [
     { crate = "base64@0.22.1", reason = "sqlx-core and wiremock still use 0.22; reqwest uses 0.23" },
     { crate = "hashbrown@0.16.1", reason = "sqlx-core and hashlink still use 0.16" },
+    { crate = "getrandom@0.2.17", reason = "ring still uses 0.2; jobserver and tempfile use 0.4" },
+    { crate = "synstructure@0.13.2", reason = "asn1-rs-derive (x509-parser) still uses 0.13; yoke-derive uses 0.14" },
+    { crate = "unicode-width@0.1.14", reason = "miette still uses 0.1; ratatui uses 0.2" },
+    { crate = "windows-sys@0.52.0", reason = "ring still uses 0.52; the rest use 0.61" },
     { crate = "syn@2.0.119", reason = "sqlx-macros and other proc-macros still use syn 2; others use 3" },
 ]
 
