@@ -790,9 +790,13 @@ async fn add_headers_by_typing_and_they_are_sent_and_recorded() {
     type_text(&mut h.app, "http://x/h");
     h.app.handle_key(key(KeyCode::Tab));
     h.app.handle_key(ctrl('t'));
-    type_text(&mut h.app, "X-A: 1");
-    h.app.handle_key(key(KeyCode::Enter)); // a new line appends another header
-    type_text(&mut h.app, "Authorization: Bearer a:b");
+    type_text(&mut h.app, "X-A");
+    h.app.handle_key(key(KeyCode::Enter)); // name -> value
+    type_text(&mut h.app, "1");
+    h.app.handle_key(key(KeyCode::Enter)); // the last value: appends another header
+    type_text(&mut h.app, "Authorization");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "Bearer a:b");
 
     assert_eq!(
         header_lines(&h.app),
@@ -835,20 +839,17 @@ async fn edit_and_remove_existing_headers() {
     assert_eq!(h.app.focus, Focus::Headers);
     assert_eq!(header_lines(&h.app), ["X-A: 1", "X-B: 2"]);
 
-    // edit: change the value on the first line
-    h.app.handle_key(key(KeyCode::End));
+    // the cursor starts on the empty row after the existing headers
+    h.app.handle_key(key(KeyCode::Up));
+    h.app.handle_key(key(KeyCode::Up));
+    h.app.handle_key(key(KeyCode::Enter)); // name -> value
     h.app.handle_key(key(KeyCode::Backspace));
     type_text(&mut h.app, "9");
     assert_eq!(header_lines(&h.app), ["X-A: 9", "X-B: 2"]);
 
-    // remove: clear the first line (Ctrl+K deletes to the end of the line)
-    h.app.handle_key(key(KeyCode::Home));
-    h.app.handle_key(ctrl('k'));
-    assert_eq!(
-        header_lines(&h.app),
-        ["X-B: 2"],
-        "a blank line is not a header"
-    );
+    // remove the row
+    h.app.handle_key(ctrl('d'));
+    assert_eq!(header_lines(&h.app), ["X-B: 2"]);
     assert!(text(&render(&h.app, 120, 30)).contains("Headers (1)"));
 }
 
@@ -859,9 +860,11 @@ async fn invalid_header_line_blocks_send_and_points_at_the_line() {
     type_text(&mut h.app, "http://x");
     h.app.handle_key(key(KeyCode::Tab));
     h.app.handle_key(ctrl('t'));
-    type_text(&mut h.app, "X-A: 1");
+    type_text(&mut h.app, "X-A");
     h.app.handle_key(key(KeyCode::Enter));
-    type_text(&mut h.app, "oops");
+    type_text(&mut h.app, "1");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "bad name"); // a space is not allowed in a name
     h.app.handle_key(key(KeyCode::Tab)); // leave the editor
     h.app.handle_key(key(KeyCode::Tab));
     h.app.handle_key(ctrl('t')); // back to Body to prove the failure switches tabs
@@ -875,10 +878,7 @@ async fn invalid_header_line_blocks_send_and_points_at_the_line() {
         (RequestTab::Headers, Focus::Headers)
     );
     let out = text(&render(&h.app, 120, 30));
-    assert!(
-        out.contains("header line 2") || out.contains("line 2"),
-        "{out}"
-    );
+    assert!(out.contains("header 2"), "{out}");
 }
 
 #[tokio::test]
@@ -931,10 +931,56 @@ async fn clicking_the_headers_editor_places_the_cursor() {
     h.app.handle_key(ctrl('t'));
     let a = ui::areas(SCREEN);
     let inner = ui::inner(a.body);
-    click(&mut h.app, inner.x + 4, inner.y + 1); // line 2, after `X-B:`
+    let grid = ui::header_grid(inner, h.app.headers.rows.len(), h.app.headers.row);
+    let second = grid.rows[1];
+    click(&mut h.app, second.name.x + 3, second.name.y); // after `X-B`
     assert_eq!(h.app.focus, Focus::Headers);
     type_text(&mut h.app, "Z");
-    assert_eq!(h.app.headers.lines(), ["X-A: 1", "X-B:Z 2"]);
+    assert_eq!(h.app.headers.lines(), ["X-A: 1", "X-BZ: 2"]);
+
+    click(&mut h.app, second.value.x, second.value.y);
+    type_text(&mut h.app, "9");
+    assert_eq!(h.app.headers.lines(), ["X-A: 1", "X-BZ: 92"]);
+}
+
+#[tokio::test]
+async fn header_inputs_are_side_by_side_and_navigable_and_can_be_appended() {
+    let mut h = harness().await;
+    h.app.load_request(&request_with_headers());
+    h.app.handle_key(ctrl('t'));
+    h.app.handle_key(key(KeyCode::Tab));
+    h.app.handle_key(key(KeyCode::Tab));
+    let out = text(&render(&h.app, 120, 30));
+    let line = out.lines().find(|l| l.contains("X-A")).unwrap();
+    assert!(
+        line.contains("X-A") && line.find(": ") < line.find('1'),
+        "{line}"
+    );
+    assert!(out.contains("+ add header"), "{out}");
+
+    // Right at the end of a name enters the value; Left at its start goes back
+    h.app.handle_key(key(KeyCode::Up));
+    h.app.handle_key(key(KeyCode::Up));
+    h.app.handle_key(key(KeyCode::Right));
+    type_text(&mut h.app, "!");
+    h.app.handle_key(key(KeyCode::Left));
+    h.app.handle_key(key(KeyCode::Left));
+    h.app.handle_key(key(KeyCode::Left));
+    type_text(&mut h.app, "-");
+    assert_eq!(h.app.headers.lines()[0], "X--A: !1");
+
+    // a click on the add line appends a row
+    let a = ui::areas(SCREEN);
+    let grid = ui::header_grid(
+        ui::inner(a.body),
+        h.app.headers.rows.len(),
+        h.app.headers.row,
+    );
+    let add = grid.add.expect("room for the add line");
+    let before = h.app.headers.rows.len();
+    click(&mut h.app, add.x + 2, add.y);
+    assert_eq!(h.app.headers.rows.len(), before + 1);
+    assert_eq!(h.app.headers.row, before);
 }
 
 #[tokio::test]
@@ -1252,14 +1298,14 @@ async fn ctrl_g_switches_kind_keeping_address_body_and_headers() {
     let mut h = harness().await;
     h.app.load_request(&request_with_headers());
     h.app.body = TextArea::new(vec!["{\"a\": 1}".into()]);
-    let (url, body, headers) = (h.app.url_text(), lines(&h.app.body), lines(&h.app.headers));
+    let (url, body, headers) = (h.app.url_text(), lines(&h.app.body), h.app.headers.lines());
     assert_eq!(h.app.kind, Kind::Http);
 
     h.app.handle_key(ctrl('g'));
     assert_eq!(h.app.kind, Kind::Grpc);
     assert_eq!(h.app.url_text(), url, "the URL becomes the address");
     assert_eq!(lines(&h.app.body), body);
-    assert_eq!(lines(&h.app.headers), headers, "headers become metadata");
+    assert_eq!(h.app.headers.lines(), headers, "headers become metadata");
     assert_eq!(h.app.editor_grpc_request().address, "http://x/t");
 
     h.app.handle_key(ctrl('g'));
@@ -1312,7 +1358,7 @@ async fn loading_a_grpc_request_switches_to_grpc_and_fills_every_field() {
         SchemaSource::File("api/user.proto".into())
     );
     assert!(h.app.insecure);
-    assert_eq!(lines(&h.app.headers), ["authorization: Bearer t"]);
+    assert_eq!(h.app.headers.lines(), ["authorization: Bearer t"]);
     assert_eq!(h.app.body_text(), "{\n  \"id\": 7\n}");
     assert_eq!(h.app.editor_grpc_request(), grpc_request());
 }

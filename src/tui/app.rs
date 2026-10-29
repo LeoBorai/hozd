@@ -9,7 +9,7 @@ use ratatui_textarea::{CursorMove, Input, TextArea};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
-use super::headers;
+use super::headers::{Col, HeaderEditor};
 use super::json::pretty;
 use super::log::{Level, Log};
 use super::modal::Modal;
@@ -182,7 +182,7 @@ pub struct App {
     pub url: TextArea<'static>,
     pub body: TextArea<'static>,
     /// One `Name: value` per line, see [`headers`].
-    pub headers: TextArea<'static>,
+    pub headers: HeaderEditor,
     pub request_tab: RequestTab,
     /// gRPC editor: whether the schema comes from reflection or from `schema_path`.
     pub schema_mode: SchemaMode,
@@ -265,7 +265,7 @@ impl App {
             method: Method::Get,
             url: single_line(""),
             body: TextArea::default(),
-            headers: TextArea::default(),
+            headers: HeaderEditor::default(),
             request_tab: RequestTab::Body,
             schema_mode: SchemaMode::Reflection,
             schema_path: single_line(""),
@@ -314,12 +314,12 @@ impl App {
 
     /// The request as edited; header lines that are not `Name: value` are skipped.
     pub fn editor_request(&self) -> HttpRequest {
-        self.build_request(headers::parse_lenient(self.headers.lines()))
+        self.build_request(self.headers.parse_lenient())
     }
 
     /// Like [`editor_request`](Self::editor_request) but fails on an invalid header line.
     pub fn try_request(&self) -> Result<HttpRequest, String> {
-        Ok(self.build_request(headers::parse(self.headers.lines())?))
+        Ok(self.build_request(self.headers.parse()?))
     }
 
     fn build_request(&self, headers: Vec<Header>) -> HttpRequest {
@@ -377,12 +377,12 @@ impl App {
 
     /// The gRPC request as edited; metadata lines that are not `Name: value` are skipped.
     pub fn editor_grpc_request(&self) -> GrpcRequest {
-        self.build_grpc_request(headers::parse_lenient(self.headers.lines()))
+        self.build_grpc_request(self.headers.parse_lenient())
     }
 
     /// Like [`editor_grpc_request`](Self::editor_grpc_request) but fails on an invalid line.
     pub fn try_grpc_request(&self) -> Result<GrpcRequest, String> {
-        Ok(self.build_grpc_request(headers::parse(self.headers.lines())?))
+        Ok(self.build_grpc_request(self.headers.parse()?))
     }
 
     fn build_grpc_request(&self, metadata: Vec<Header>) -> GrpcRequest {
@@ -599,7 +599,7 @@ impl App {
                 self.body.input(Input::from(key));
             }
             Focus::Headers => {
-                self.headers.input(Input::from(key));
+                self.headers.key(key);
             }
             Focus::Schema => self.schema_input(key),
             Focus::Method => self.method_key(key.code),
@@ -1065,16 +1065,42 @@ impl App {
             }
             self.focus_editor(self.editor_focus());
             let inner = ui::inner(areas.body);
-            if inner.contains(at) {
-                let ta = match self.request_tab {
-                    RequestTab::Body => &mut self.body,
-                    RequestTab::Headers => &mut self.headers,
-                };
-                let (row_scroll, col_scroll) = ui::editor_scroll(cursor_of(ta), inner);
-                ta.move_cursor(CursorMove::Jump(
-                    (at.y - inner.y) + row_scroll as u16,
-                    (at.x - inner.x) + col_scroll as u16,
-                ));
+            if !inner.contains(at) {
+                return;
+            }
+            match self.request_tab {
+                RequestTab::Body => {
+                    let (row_scroll, col_scroll) = ui::editor_scroll(cursor_of(&self.body), inner);
+                    self.body.move_cursor(CursorMove::Jump(
+                        (at.y - inner.y) + row_scroll as u16,
+                        (at.x - inner.x) + col_scroll as u16,
+                    ));
+                }
+                RequestTab::Headers => self.click_headers(at, inner),
+            }
+        }
+    }
+
+    /// Clicking an input puts the cursor there; clicking the last line adds a header.
+    fn click_headers(&mut self, at: Position, inner: Rect) {
+        let grid = ui::header_grid(inner, self.headers.rows.len(), self.headers.row);
+        if grid.add.is_some_and(|r| r.contains(at)) {
+            return self.headers.add_row();
+        }
+        for cells in &grid.rows {
+            for (rect, col) in [(cells.name, Col::Name), (cells.value, Col::Value)] {
+                if rect.contains(at) {
+                    let row = &self.headers.rows[cells.row];
+                    let ta = if col == Col::Name {
+                        &row.name
+                    } else {
+                        &row.value
+                    };
+                    let (_, scroll) = ui::editor_scroll(cursor_of(ta), rect);
+                    self.headers
+                        .select(cells.row, col, (at.x - rect.x) + scroll as u16);
+                    return;
+                }
             }
         }
     }
@@ -1193,10 +1219,7 @@ impl App {
             .as_deref()
             .map(|b| TextArea::new(b.lines().map(str::to_owned).collect()))
             .unwrap_or_default();
-        self.headers = match headers::to_lines(&request.headers) {
-            lines if lines.is_empty() => TextArea::default(),
-            lines => TextArea::new(lines),
-        };
+        self.headers = HeaderEditor::from_headers(&request.headers);
     }
 
     fn load_grpc_request(&mut self, request: &GrpcRequest) {
@@ -1216,10 +1239,7 @@ impl App {
             .as_deref()
             .map(|b| TextArea::new(b.lines().map(str::to_owned).collect()))
             .unwrap_or_default();
-        self.headers = match headers::to_lines(&request.metadata) {
-            lines if lines.is_empty() => TextArea::default(),
-            lines => TextArea::new(lines),
-        };
+        self.headers = HeaderEditor::from_headers(&request.metadata);
     }
 
     // ---- background work ------------------------------------------------

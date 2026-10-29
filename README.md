@@ -16,7 +16,7 @@ lazygit/lazydocker-style TUI. Built on [reqwest](https://docs.rs/reqwest),
 - **Left**: `Stored` templates and `History`. Moving over an entry previews it: the center
   panel shows its request, the right panel its response (history only). Nothing is sent.
 - **Center**: HTTP method, URL, and a box with two tabs: **Body** (JSON editor with syntax
-  highlighting) and **Headers** (one `Name: value` per line).
+  highlighting) and **Headers** (name and value inputs, one row per header).
 - **Right**: response status, headers and body.
 
 ## Install
@@ -182,18 +182,20 @@ you were looking at.
 
 ### Headers
 
-The Headers tab is a plain text editor, one header per line, like `curl -H`:
+The Headers tab has one row per header: the name and the value are inputs side by side.
 
-```
-Content-Type: application/json
-Authorization: Bearer abc123
-```
+| Key                   | Action                                                        |
+| --------------------- | ------------------------------------------------------------- |
+| `Enter` (in a name)   | Move to the value                                             |
+| `Enter` (in a value)  | Move to the next row; on the last row, append a new header    |
+| `Up` / `Down`         | Previous / next row                                           |
+| `Right` / `Left`      | At the end of a name / start of a value, cross to the other input |
+| `Ctrl+D`              | Remove the row                                                |
 
-Edit a line to change a header, delete a line to remove it, press `Enter` at the end to
-append another. Blank lines are ignored. Only the first `:` splits name from value, so values
-may contain colons. A line that is not `Name: value` shows in red, and sending is refused
-with the line number until you fix it. Headers of loaded templates and history entries
-appear here and are saved with every history entry.
+Clicking an input puts the cursor there; clicking the `+ add header` line appends a row.
+Rows left empty are ignored. A name with characters a header cannot have shows in red, and
+sending is refused with the row number until you fix it. Headers of loaded templates and
+history entries appear here and are saved with every history entry.
 
 ## Development
 
