@@ -330,6 +330,67 @@ pub fn header_grid(inner: Rect, count: usize, selected: usize) -> HeaderGrid {
     HeaderGrid { rows, add }
 }
 
+/// The most suggestion rows shown at once.
+const SUGGESTION_ROWS: u16 = 6;
+
+/// The suggestion list: right under the Schema box (`schema` is its outer rect), as wide
+/// as it, over whatever is below.
+pub fn suggestions_area(schema: Rect, count: usize) -> Rect {
+    let rows = (count as u16).min(SUGGESTION_ROWS);
+    Rect::new(schema.x, schema.bottom(), schema.width, rows + 2)
+}
+
+/// `text` cut from the left to fit `width` columns, so the end of a long path (the part
+/// being completed) stays visible.
+fn tail(text: &str, width: usize) -> String {
+    let count = text.chars().count();
+    if count <= width || width == 0 {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().skip(count - (width - 1)).collect();
+    format!("…{kept}")
+}
+
+fn draw_suggestions(frame: &mut Frame, app: &App, schema: Rect) {
+    let items = &app.suggestions.items;
+    let area = suggestions_area(schema, items.len());
+    let area = area.intersection(frame.area());
+    if area.height < 3 {
+        return;
+    }
+    frame.render_widget(Clear, area);
+    let title = Line::styled(
+        " Tab accept | Up/Down | Enter ",
+        Style::new().fg(Color::DarkGray),
+    );
+    let outer = block_titled(title, true);
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+    let rows: Vec<ListItem> = items
+        .iter()
+        .map(|s| {
+            let style = if s.dir {
+                Style::new().fg(Color::Cyan)
+            } else {
+                Style::new()
+            };
+            ListItem::new(Line::styled(tail(&s.text, inner.width as usize), style))
+        })
+        .collect();
+    let mut state = ListState::default()
+        .with_selected(app.suggestions.sel)
+        .with_offset(list_offset(app.suggestions.sel, inner.height));
+    frame.render_stateful_widget(
+        List::new(rows).highlight_style(
+            Style::new()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
+        inner,
+        &mut state,
+    );
+}
+
 pub fn draw(frame: &mut Frame, app: &App) {
     let (main, status) = main_area(frame.area());
     let [left, center, right] = panel_areas(main);
@@ -339,6 +400,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_center(frame, app, &view.request, view.previewing, center);
     draw_right(frame, app, view.outcome, right);
     draw_status(frame, app, status);
+    if !app.suggestions.items.is_empty() {
+        let [_, center, _] = panel_areas(main);
+        draw_suggestions(frame, app, center_areas(center, Kind::Grpc).schema);
+    }
     if app.picker.is_some() {
         draw_picker(frame, app, frame.area());
     }

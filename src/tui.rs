@@ -1,4 +1,5 @@
 mod app;
+pub mod complete;
 pub mod headers;
 pub mod html;
 pub mod json;
