@@ -355,7 +355,9 @@ impl App {
     pub fn schema_source(&self) -> SchemaSource {
         match self.schema_mode {
             SchemaMode::Reflection => SchemaSource::Reflection,
-            SchemaMode::File => SchemaSource::File(PathBuf::from(self.schema_path_text().trim())),
+            SchemaMode::File => {
+                SchemaSource::File(complete::expand_home(self.schema_path_text().trim()))
+            }
         }
     }
 

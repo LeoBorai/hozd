@@ -57,9 +57,16 @@ fn expand(dir_part: &str) -> PathBuf {
     if dir_part.is_empty() {
         return PathBuf::from(".");
     }
-    match dir_part.strip_prefix("~/") {
-        Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
-        None => PathBuf::from(dir_part),
+    expand_home(dir_part)
+}
+
+/// `path` with a leading `~` or `~/` replaced by the home directory.
+pub fn expand_home(path: &str) -> PathBuf {
+    let home = || dirs::home_dir().unwrap_or_default();
+    match path.strip_prefix("~") {
+        Some("") => home(),
+        Some(rest) if rest.starts_with('/') => home().join(&rest[1..]),
+        _ => PathBuf::from(path),
     }
 }
 
@@ -69,6 +76,15 @@ mod tests {
 
     fn texts(found: &[Suggestion]) -> Vec<&str> {
         found.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    #[test]
+    fn a_leading_tilde_is_the_home_directory() {
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(expand_home("~"), home);
+        assert_eq!(expand_home("~/a/b.proto"), home.join("a/b.proto"));
+        assert_eq!(expand_home("~x/a"), PathBuf::from("~x/a"));
+        assert_eq!(expand_home("a/~/b"), PathBuf::from("a/~/b"));
     }
 
     #[test]

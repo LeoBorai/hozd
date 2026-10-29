@@ -44,6 +44,12 @@ fn load_descriptor_set(path: &Path) -> Result<Schema, GrpcError> {
 }
 
 fn compile_proto(path: &Path, proto_include: &[PathBuf]) -> Result<Schema, GrpcError> {
+    if !path.is_file() {
+        return Err(GrpcError::Schema(format!(
+            "cannot read {}: no such file",
+            path.display()
+        )));
+    }
     let dir = match path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         _ => Path::new("."),
