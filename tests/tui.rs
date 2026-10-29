@@ -221,7 +221,12 @@ async fn the_schema_file_input_suggests_paths_and_tab_accepts() {
         shown,
         [format!("{root}/deps/"), format!("{root}/demo.proto")]
     );
-    assert!(text(&render(&h.app, 120, 30)).contains("demo.proto"));
+    // however long the directory is (macOS temp dirs are), the end of each path shows
+    let drawn = text(&render(&h.app, 120, 30));
+    assert!(
+        drawn.contains("demo.proto") && drawn.contains("deps/"),
+        "{drawn}"
+    );
 
     // Down moves onto the list, Tab accepts that one instead of leaving the input
     h.app.handle_key(key(KeyCode::Down));

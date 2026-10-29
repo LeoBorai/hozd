@@ -340,6 +340,17 @@ pub fn suggestions_area(schema: Rect, count: usize) -> Rect {
     Rect::new(schema.x, schema.bottom(), schema.width, rows + 2)
 }
 
+/// `text` cut from the left to fit `width` columns, so the end of a long path (the part
+/// being completed) stays visible.
+fn tail(text: &str, width: usize) -> String {
+    let count = text.chars().count();
+    if count <= width || width == 0 {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().skip(count - (width - 1)).collect();
+    format!("…{kept}")
+}
+
 fn draw_suggestions(frame: &mut Frame, app: &App, schema: Rect) {
     let items = &app.suggestions.items;
     let area = suggestions_area(schema, items.len());
@@ -363,7 +374,7 @@ fn draw_suggestions(frame: &mut Frame, app: &App, schema: Rect) {
             } else {
                 Style::new()
             };
-            ListItem::new(Line::styled(s.text.clone(), style))
+            ListItem::new(Line::styled(tail(&s.text, inner.width as usize), style))
         })
         .collect();
     let mut state = ListState::default()
