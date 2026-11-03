@@ -121,10 +121,13 @@ proto_include = ["~/work/protos"]
 | ----------------- | ---------------------------------------- |
 | `Tab` / `S-Tab`   | Cycle focus: list, URL, body             |
 | `Esc`             | Back to the list                         |
+| `?` / `F1`        | Open the keybindings menu: `Up`/`Down` pick a row, `Enter` runs it, `Esc` closes (`?` types a character in text fields, use `F1` there) |
 | `[` `]` / `h` `l` | Switch Stored / History tab (list)       |
 | `j` `k` / arrows  | Move selection (list)                    |
 | `Enter`           | Load the selected entry into the editor (list); send (URL field) |
-| `Ctrl+S`          | Send the request                         |
+| `Ctrl+S` / `Ctrl+Enter` / `Cmd+Enter` | Send the request (`Ctrl+Enter` needs a kitty-protocol terminal) |
+| `Ctrl+1`..`Ctrl+9` | Jump to the panel with that number (shown in its title), also from text fields; needs a kitty-protocol terminal |
+| `1`..`9`          | Same, but only outside text fields |
 | `Ctrl+N` / `Ctrl+P` | Next / previous HTTP method            |
 | `Ctrl+T`          | Switch the request box between Body and Headers (Metadata in gRPC) |
 | `Ctrl+G`          | Switch the request between REST and gRPC |

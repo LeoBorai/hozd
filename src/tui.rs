@@ -1,4 +1,7 @@
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use futures_util::StreamExt;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -9,6 +12,7 @@ pub use app::{
 };
 pub use terminal::{RestoreGuard, osc52};
 
+pub mod commands;
 pub mod complete;
 pub mod headers;
 pub mod log;
@@ -24,6 +28,14 @@ mod terminal;
 pub async fn run(mut app: App, mut rx: UnboundedReceiver<Msg>) -> std::io::Result<()> {
     let mut terminal = ratatui::try_init()?;
     crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+    // Lets terminals that speak the kitty protocol report Ctrl+Enter distinctly.
+    let enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+    if enhanced {
+        crossterm::execute!(
+            std::io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+    }
 
     // `ratatui::init` restores the terminal on panic but knows nothing about the mouse.
     let panic_hook = std::panic::take_hook();
@@ -34,6 +46,9 @@ pub async fn run(mut app: App, mut rx: UnboundedReceiver<Msg>) -> std::io::Resul
     }));
 
     let _guard = RestoreGuard::new(|| {
+        if enhanced {
+            let _ = crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+        }
         let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
         ratatui::restore();
     });

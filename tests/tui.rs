@@ -964,7 +964,7 @@ async fn clicking_the_tab_titles_switches_tabs_and_focuses_the_editor() {
     let mut h = harness().await;
     let a = ui::areas(SCREEN);
     // title row is the top border; " Body " = 6 columns after the corner, then `|`, then " Headers "
-    click(&mut h.app, a.body.x + 1 + 8, a.body.y);
+    click(&mut h.app, a.body.x + 1 + 12, a.body.y);
     assert_eq!(
         (h.app.request_tab, h.app.focus),
         (RequestTab::Headers, Focus::Headers)
@@ -1042,7 +1042,7 @@ async fn clicking_a_tab_title_while_previewing_loads_the_entry_first() {
     let mut h = with_two_history_entries().await;
     pump(&mut h, |a| a.view().previewing).await;
     let a = ui::areas(SCREEN);
-    click(&mut h.app, a.body.x + 1 + 8, a.body.y);
+    click(&mut h.app, a.body.x + 1 + 12, a.body.y);
     assert_eq!(h.app.editor_request().url, "http://x/second");
     assert_eq!(h.app.request_tab, RequestTab::Headers);
 }
@@ -1652,7 +1652,7 @@ async fn clicking_the_tls_box_toggles_insecure_and_metadata_title_switches_tabs(
     // `Metadata` is the second title on the request box's top border.
     click(
         &mut h.app,
-        a.body.x + 1 + " Body ".len() as u16 + 3,
+        a.body.x + 1 + " [5] Body ".len() as u16 + 3,
         a.body.y,
     );
     assert_eq!(h.app.request_tab, hozd::tui::RequestTab::Headers);
@@ -2514,4 +2514,52 @@ fn every_grpc_key_is_documented_in_the_readme() {
     ] {
         assert!(readme.contains(key), "README lacks {key}");
     }
+}
+
+#[tokio::test]
+async fn question_mark_opens_the_keybindings_menu_and_enter_runs_a_row() {
+    let mut h = harness().await;
+    h.app.handle_key(key(KeyCode::Char('?')));
+    assert_eq!(h.app.help, Some(0));
+    let out = text(&render(&h.app, 120, 30));
+    assert!(
+        out.contains("Keybindings") && out.contains("<ctrl+s>") && out.contains("Send the request"),
+        "{out}"
+    );
+
+    // Rows are listed in `commands()` order; run "Focus next panel" (the first).
+    assert_eq!(h.app.focus, Focus::List);
+    h.app.handle_key(key(KeyCode::Enter));
+    assert_eq!(h.app.help, None);
+    assert_eq!(h.app.focus, Focus::Url);
+
+    // Down moves the selection; Esc closes without running.
+    h.app.handle_key(key(KeyCode::F(1)));
+    h.app.handle_key(key(KeyCode::Down));
+    assert_eq!(h.app.help, Some(1));
+    h.app.handle_key(key(KeyCode::Esc));
+    assert_eq!(h.app.help, None);
+    assert_eq!(h.app.focus, Focus::Url);
+}
+
+#[tokio::test]
+async fn question_mark_types_in_text_fields_and_f1_opens_the_menu() {
+    let mut h = harness().await;
+    h.app.handle_key(key(KeyCode::Tab));
+    assert_eq!(h.app.focus, Focus::Url);
+    h.app.handle_key(key(KeyCode::Char('?')));
+    assert_eq!(h.app.help, None);
+    assert!(h.app.url_text().contains('?'));
+    h.app.handle_key(key(KeyCode::F(1)));
+    assert_eq!(h.app.help, Some(0));
+}
+
+#[tokio::test]
+async fn the_keybindings_menu_lists_only_commands_of_the_current_mode() {
+    let mut h = harness().await;
+    let rest: Vec<_> = h.app.commands().iter().map(|c| c.description).collect();
+    assert!(rest.contains(&"Next HTTP method") && !rest.contains(&"Load the schema"));
+    h.app.handle_key(ctrl('g'));
+    let grpc: Vec<_> = h.app.commands().iter().map(|c| c.description).collect();
+    assert!(grpc.contains(&"Load the schema") && !grpc.contains(&"Next HTTP method"));
 }

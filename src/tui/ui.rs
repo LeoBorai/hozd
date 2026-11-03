@@ -246,7 +246,7 @@ pub fn stored_row_map(app: &App) -> Vec<Option<usize>> {
 
 /// Titles of the request's lower box: `" Body "` and `" Headers (n) "` (`" Metadata (n) "`
 /// for gRPC), joined by `|`.
-fn request_tab_labels(count: usize, kind: Kind) -> (String, String) {
+fn request_tab_labels(count: usize, kind: Kind, panel: usize) -> (String, String) {
     let name = match kind {
         Kind::Http => "Headers",
         Kind::Grpc => "Metadata",
@@ -256,7 +256,7 @@ fn request_tab_labels(count: usize, kind: Kind) -> (String, String) {
     } else {
         format!(" {name} ({count}) ")
     };
-    (" Body ".to_owned(), second)
+    (format!(" [{panel}] Body "), second)
 }
 
 /// Which request tab title is under `at`; titles sit on the box's top border, starting
@@ -266,12 +266,13 @@ pub fn request_tab_at(
     at: Position,
     header_count: usize,
     kind: Kind,
+    panel: usize,
 ) -> Option<RequestTab> {
     if at.y != body.y {
         return None;
     }
     let offset = at.x.checked_sub(body.x + 1)? as usize;
-    let (body_label, headers_label) = request_tab_labels(header_count, kind);
+    let (body_label, headers_label) = request_tab_labels(header_count, kind, panel);
     let divider = body_label.len();
     match offset {
         o if o < divider => Some(RequestTab::Body),
@@ -408,9 +409,67 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if app.picker.is_some() {
         draw_picker(frame, app, frame.area());
     }
+    if app.help.is_some() {
+        draw_help(frame, app, frame.area());
+    }
     if let Some(modal) = &app.modal {
         draw_modal(frame, modal, frame.area());
     }
+}
+
+// ---- keybindings menu -------------------------------------------------------
+
+/// The keybindings menu: the center panel with a one-cell margin, like the picker.
+pub fn help_area(area: Rect) -> Rect {
+    picker_area(area)
+}
+
+fn draw_help(frame: &mut Frame, app: &App, screen: Rect) {
+    let Some(selected) = app.help else {
+        return;
+    };
+    let area = help_area(screen);
+    frame.render_widget(Clear, area);
+    let title = Line::from(vec![
+        Span::styled(" Keybindings ", Style::new().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "| Up/Down | Enter: run | Esc ",
+            Style::new().fg(Color::DarkGray),
+        ),
+    ]);
+    let outer = block_titled(title, true);
+    let list_area = outer.inner(area);
+    frame.render_widget(outer, area);
+    if list_area.height == 0 {
+        return;
+    }
+    let commands = app.commands();
+    let key_width = commands.iter().map(|c| c.key.len()).max().unwrap_or(0);
+    let rows: Vec<ListItem> = commands
+        .iter()
+        .map(|c| {
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{:<key_width$}", c.key),
+                    Style::new().fg(Color::Green),
+                ),
+                Span::raw("  "),
+                Span::raw(c.description),
+            ]))
+        })
+        .collect();
+    let mut state = ListState::default()
+        .with_selected(Some(selected))
+        .with_offset(list_offset(Some(selected), list_area.height));
+    frame.render_stateful_widget(
+        List::new(rows).highlight_style(
+            Style::new()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
+        list_area,
+        &mut state,
+    );
 }
 
 // ---- method picker ------------------------------------------------------------
@@ -543,6 +602,14 @@ fn draw_modal(frame: &mut Frame, modal: &super::modal::Modal, screen: Rect) {
     });
 }
 
+/// `[n] title`: `n` is the key that focuses `panel`.
+fn numbered(app: &App, panel: Focus, title: &str) -> String {
+    match app.panels().iter().position(|p| *p == panel) {
+        Some(i) => format!("[{}] {title}", i + 1),
+        None => title.to_owned(),
+    }
+}
+
 fn block(title: &str, focused: bool) -> Block<'static> {
     block_titled(Line::raw(format!(" {title} ")), focused)
 }
@@ -601,7 +668,7 @@ fn draw_log(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.focus == Focus::List;
-    let outer = block("Requests", focused);
+    let outer = block(&numbered(app, Focus::List, "Requests"), focused);
     frame.render_widget(outer, area);
 
     let (tabs, list) = left_areas(area);
@@ -801,7 +868,14 @@ fn draw_address(
         Kind::Http => (selected, Style::new()),
         Kind::Grpc => (Style::new(), selected),
     };
-    let mut title_spans = vec![Span::raw(format!(" {title} "))];
+    let mut title_spans = vec![Span::raw(format!(
+        " {} ",
+        if previewing {
+            title.to_owned()
+        } else {
+            numbered(app, Focus::Url, title)
+        }
+    ))];
     if request.kind == Kind::Grpc && request.grpc.insecure && is_tls(&request.url) {
         title_spans.push(Span::styled(
             "- NOT VERIFIED ",
@@ -861,7 +935,10 @@ fn draw_schema(
     } else {
         Some(app.schema_status())
     };
-    let mut block = block("Schema", app.focus == Focus::Schema);
+    let mut block = block(
+        &numbered(app, Focus::Schema, "Schema"),
+        app.focus == Focus::Schema,
+    );
     if let Some(status) = status {
         block = block.title_top(
             Line::styled(format!(" {status} "), Style::new().fg(Color::DarkGray)).right_aligned(),
@@ -930,7 +1007,10 @@ fn draw_rpc(
     } else {
         "Method (Enter: pick)"
     };
-    let block = block(title, app.focus == Focus::Method);
+    let block = block(
+        &numbered(app, Focus::Method, title),
+        app.focus == Focus::Method,
+    );
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -964,7 +1044,14 @@ fn draw_request_box(
     area: Rect,
 ) {
     let lower_focused = matches!(app.focus, Focus::Body | Focus::Headers);
-    let (body_label, headers_label) = request_tab_labels(request.headers.len(), request.kind);
+    let (body_label, headers_label) = request_tab_labels(
+        request.headers.len(),
+        request.kind,
+        app.panels()
+            .iter()
+            .position(|p| *p == app.editor_focus())
+            .map_or(0, |i| i + 1),
+    );
     let active = Style::new()
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         .fg(Color::Yellow);
@@ -1191,7 +1278,10 @@ fn draw_right(frame: &mut Frame, app: &App, outcome: Option<&Outcome>, area: Rec
     };
     frame.render_widget(Paragraph::new(header_lines), headers_inner);
 
-    let body_block = block("Body (Enter: open)", app.focus == Focus::Response);
+    let body_block = block(
+        &numbered(app, Focus::Response, "Body (Enter: open)"),
+        app.focus == Focus::Response,
+    );
     let body_inner = body_block.inner(body_area);
     frame.render_widget(body_block, body_area);
     let body_lines: Vec<Line> = match outcome {
@@ -1245,8 +1335,8 @@ fn grpc_body_lines(g: &crate::client::GrpcOutcome) -> Vec<Line<'static>> {
 // ---- status bar ------------------------------------------------------------
 
 /// Both fit a 120-column terminal; the README has the full key tables.
-pub const HELP_REST: &str = "Tab focus | Ctrl+G gRPC | [ ] tabs | j/k move | Enter load | Ctrl+S send | Ctrl+N/P method | Ctrl+T hdrs | q quit";
-pub const HELP_GRPC: &str = "Ctrl+G REST/gRPC | Ctrl+L schema | Ctrl+N method | Ctrl+S send | Ctrl+X cancel | Ctrl+O source | Ctrl+K TLS | q quit";
+pub const HELP_REST: &str = "Tab focus | Ctrl+G gRPC | [ ] tabs | j/k move | Enter load | Ctrl+S send | Ctrl+N/P method | ? keys | q quit";
+pub const HELP_GRPC: &str = "Ctrl+G REST/gRPC | Ctrl+L schema | Ctrl+N method | Ctrl+S send | Ctrl+X cancel | Ctrl+O source | Ctrl+K TLS | ? keys";
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let text = match &app.status {
