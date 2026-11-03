@@ -7,13 +7,14 @@ use ratatui::widgets::{
 };
 use ratatui_textarea::TextArea;
 
+use crate::client::{Kind, Method, SchemaSource, status_name};
+use crate::history::Outcome;
+use crate::project::TemplateKind;
+
 use super::app::{App, Focus, RequestTab, SchemaMode, Tab};
 use super::headers::{self, Col};
 use super::json::{highlight_line, pretty};
 use super::log::message_color;
-use crate::client::{Kind, Method, SchemaSource, status_name};
-use crate::history::Outcome;
-use crate::project::TemplateKind;
 
 /// Left, center and right panels on a 12-column grid: 3-6-3.
 pub fn panel_areas(area: Rect) -> [Rect; 3] {

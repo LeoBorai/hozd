@@ -1,13 +1,3 @@
-mod app;
-pub mod complete;
-pub mod headers;
-pub mod html;
-pub mod json;
-pub mod log;
-pub mod modal;
-mod terminal;
-pub mod ui;
-
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream};
 use futures_util::StreamExt;
 use ratatui::layout::Rect;
@@ -19,21 +9,36 @@ pub use app::{
 };
 pub use terminal::{RestoreGuard, osc52};
 
+pub mod complete;
+pub mod headers;
+pub mod html;
+pub mod json;
+pub mod log;
+pub mod modal;
+pub mod ui;
+
+mod app;
+mod terminal;
+
 /// Runs the TUI until the user quits. State changes only happen in this loop; requests
 /// run in spawned tasks and report back through `rx`, so the UI never blocks on them.
 pub async fn run(mut app: App, mut rx: UnboundedReceiver<Msg>) -> std::io::Result<()> {
     let mut terminal = ratatui::try_init()?;
     crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+
     // `ratatui::init` restores the terminal on panic but knows nothing about the mouse.
     let panic_hook = std::panic::take_hook();
+
     std::panic::set_hook(Box::new(move |info| {
         let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
         panic_hook(info);
     }));
+
     let _guard = RestoreGuard::new(|| {
         let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
         ratatui::restore();
     });
+
     let mut events = EventStream::new();
 
     while !app.should_quit {

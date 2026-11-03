@@ -1,9 +1,3 @@
-mod fake;
-pub mod grpc;
-mod http;
-mod trace;
-mod types;
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -17,6 +11,13 @@ pub use grpc::{
 pub use http::ReqwestClient;
 pub use trace::{Trace, trace_certificate, trace_resolve};
 pub use types::{Header, HttpRequest, HttpResponse, Kind, Method, Outcome, Request};
+
+pub mod grpc;
+
+mod fake;
+mod http;
+mod trace;
+mod types;
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum ClientError {
