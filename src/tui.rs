@@ -54,6 +54,7 @@ pub async fn run(mut app: App, mut rx: UnboundedReceiver<Msg>) -> std::io::Resul
     });
 
     let mut events = EventStream::new();
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(140));
 
     while !app.should_quit {
         if let Some(text) = app.take_clipboard() {
@@ -75,6 +76,7 @@ pub async fn run(mut app: App, mut rx: UnboundedReceiver<Msg>) -> std::io::Resul
                 }
             }
             Some(msg) = rx.recv() => app.update(msg),
+            _ = ticker.tick(), if app.sending => app.tick(),
             else => break,
         }
     }

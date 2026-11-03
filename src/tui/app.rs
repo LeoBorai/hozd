@@ -218,6 +218,8 @@ pub struct App {
     pub preview: Option<HistoryEntry>,
     /// A request (or its schema load) is in flight.
     pub sending: bool,
+    /// Animation frame counter, advanced by [`App::tick`] while a request is in flight.
+    pub frame: usize,
     /// Cancels the in-flight gRPC call; `None` when nothing cancellable is running.
     cancel: Option<CancellationToken>,
     pub status: Option<String>,
@@ -297,6 +299,7 @@ impl App {
             live: None,
             preview: None,
             sending: false,
+            frame: 0,
             cancel: None,
             status,
             log: Log::default(),
@@ -490,6 +493,11 @@ impl App {
             outcome: self.live.as_ref(),
             previewing: false,
         }
+    }
+
+    /// Advances the loader animation.
+    pub fn tick(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
     }
 
     // ---- background results -------------------------------------------

@@ -666,6 +666,52 @@ fn draw_log(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+const SPINNER_COLORS: [Color; 4] = [Color::Cyan, Color::Green, Color::Yellow, Color::Red];
+
+/// `text` with the spinner colors cycling along it, shifting with `tick`.
+fn rainbow_spans(text: &str, tick: usize) -> Vec<Span<'static>> {
+    text.chars()
+        .enumerate()
+        .map(|(i, c)| {
+            let color = SPINNER_COLORS[(i + tick) % SPINNER_COLORS.len()];
+            Span::styled(
+                c.to_string(),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
+            )
+        })
+        .collect()
+}
+
+/// Wheel cells in clockwise order, as (column, row) on a 3x3 grid, each column 2 cells wide.
+const WHEEL: [(u16, u16); 8] = [
+    (0, 0),
+    (1, 0),
+    (2, 0),
+    (2, 1),
+    (2, 2),
+    (1, 2),
+    (0, 2),
+    (0, 1),
+];
+
+/// A spinning wheel of four color quadrants (cyan, green, yellow, red) centered in `area`.
+fn draw_spinner(frame: &mut Frame, area: Rect, tick: usize) {
+    const WIDTH: u16 = 5;
+    const HEIGHT: u16 = 3;
+    if area.width < WIDTH || area.height < HEIGHT {
+        return;
+    }
+    let left = area.x + (area.width - WIDTH) / 2;
+    let top = area.y + (area.height - HEIGHT) / 2;
+    for (i, (col, row)) in WHEEL.iter().enumerate() {
+        let color = SPINNER_COLORS[((i + tick) % 8) / 2];
+        frame.render_widget(
+            Paragraph::new(Span::styled("●", Style::new().fg(color))),
+            Rect::new(left + col * 2, top + row, 1, 1),
+        );
+    }
+}
+
 fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.focus == Focus::List;
     let outer = block(&numbered(app, Focus::List, "Requests"), focused);
@@ -1202,14 +1248,16 @@ fn draw_right(frame: &mut Frame, app: &App, outcome: Option<&Outcome>, area: Rec
     frame.render_widget(status_block, status_area);
     let status_line = match outcome {
         Some(Outcome::Grpc(g)) if app.sending => {
-            let text = if g.messages.is_empty() && !g.response_stream {
-                "sending...  ^X cancel".to_owned()
+            let label = if g.messages.is_empty() && !g.response_stream {
+                "sending...".to_owned()
             } else {
-                format!("streaming {}  ^X cancel", g.messages.len())
+                format!("streaming {}", g.messages.len())
             };
-            Line::styled(text, Style::new().fg(Color::Yellow))
+            let mut spans = rainbow_spans(&label, app.frame);
+            spans.push(Span::styled("  ^X cancel", Style::new().fg(Color::Yellow)));
+            Line::from(spans)
         }
-        _ if app.sending => Line::styled("sending...", Style::new().fg(Color::Yellow)),
+        _ if app.sending => Line::from(rainbow_spans("sending...", app.frame)),
         Some(Outcome::Response(r)) => Line::from(vec![
             Span::styled(
                 r.status.to_string(),
@@ -1290,6 +1338,11 @@ fn draw_right(frame: &mut Frame, app: &App, outcome: Option<&Outcome>, area: Rec
         Some(Outcome::Grpc(g)) => grpc_body_lines(g),
         None => Vec::new(),
     };
+    let streaming = matches!(outcome, Some(Outcome::Grpc(g)) if !g.messages.is_empty());
+    if app.sending && !streaming {
+        draw_spinner(frame, body_inner, app.frame);
+        return;
+    }
     frame.render_widget(
         Paragraph::new(body_lines)
             .wrap(ratatui::widgets::Wrap { trim: false })
