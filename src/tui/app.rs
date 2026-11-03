@@ -9,18 +9,19 @@ use ratatui_textarea::{CursorMove, Input, TextArea};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
-use super::complete::{self, Suggestion};
-use super::headers::{Col, HeaderEditor};
-use super::json::pretty;
-use super::log::{Level, Log};
-use super::modal::Modal;
-use super::ui;
 use crate::client::{
     CallEvent, CallKind, GrpcOutcome, GrpcRequest, GrpcStatus, Header, HttpRequest, Kind, Method,
     Request, Schema, SchemaSource, SharedGrpc, SharedHttp, Trace,
 };
 use crate::history::{History, HistoryEntry, Outcome, Summary};
 use crate::project::{Loaded, Template};
+
+use super::complete::{self, Suggestion};
+use super::headers::{Col, HeaderEditor};
+use super::log::{Level, Log};
+use super::modal::Modal;
+use super::syntax_highlight::json::pretty;
+use super::ui;
 
 /// Two clicks on the response body closer together than this open it.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);

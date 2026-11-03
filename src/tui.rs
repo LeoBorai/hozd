@@ -11,10 +11,9 @@ pub use terminal::{RestoreGuard, osc52};
 
 pub mod complete;
 pub mod headers;
-pub mod html;
-pub mod json;
 pub mod log;
 pub mod modal;
+pub mod syntax_highlight;
 pub mod ui;
 
 mod app;

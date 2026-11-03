@@ -6,7 +6,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
-use super::{html, json};
+use super::syntax_highlight::{html, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
