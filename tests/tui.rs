@@ -964,7 +964,7 @@ async fn clicking_the_tab_titles_switches_tabs_and_focuses_the_editor() {
     let mut h = harness().await;
     let a = ui::areas(SCREEN);
     // title row is the top border; " Body " = 6 columns after the corner, then `|`, then " Headers "
-    click(&mut h.app, a.body.x + 1 + 8, a.body.y);
+    click(&mut h.app, a.body.x + 1 + 12, a.body.y);
     assert_eq!(
         (h.app.request_tab, h.app.focus),
         (RequestTab::Headers, Focus::Headers)
@@ -1042,7 +1042,7 @@ async fn clicking_a_tab_title_while_previewing_loads_the_entry_first() {
     let mut h = with_two_history_entries().await;
     pump(&mut h, |a| a.view().previewing).await;
     let a = ui::areas(SCREEN);
-    click(&mut h.app, a.body.x + 1 + 8, a.body.y);
+    click(&mut h.app, a.body.x + 1 + 12, a.body.y);
     assert_eq!(h.app.editor_request().url, "http://x/second");
     assert_eq!(h.app.request_tab, RequestTab::Headers);
 }
@@ -1652,7 +1652,7 @@ async fn clicking_the_tls_box_toggles_insecure_and_metadata_title_switches_tabs(
     // `Metadata` is the second title on the request box's top border.
     click(
         &mut h.app,
-        a.body.x + 1 + " Body ".len() as u16 + 3,
+        a.body.x + 1 + " [5] Body ".len() as u16 + 3,
         a.body.y,
     );
     assert_eq!(h.app.request_tab, hozd::tui::RequestTab::Headers);

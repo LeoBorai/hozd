@@ -431,6 +431,16 @@ impl App {
         }
     }
 
+    /// Panels in display order; panel `n` of the UI is entry `n - 1`.
+    pub fn panels(&self) -> Vec<Focus> {
+        let mut panels = vec![Focus::List, Focus::Url];
+        if self.kind == Kind::Grpc {
+            panels.extend([Focus::Schema, Focus::Method]);
+        }
+        panels.extend([self.editor_focus(), Focus::Response]);
+        panels
+    }
+
     pub fn set_request_tab(&mut self, tab: RequestTab) {
         self.request_tab = tab;
         if matches!(self.focus, Focus::Body | Focus::Headers) {
@@ -577,6 +587,30 @@ impl App {
         }
         if self.picker.is_some() {
             return self.picker_key(key.code, ctrl);
+        }
+
+        // Ctrl/Cmd+Enter sends from any panel; terminals without the kitty keyboard
+        // protocol report Ctrl+Enter as a plain Enter or Ctrl+J, which the editors keep.
+        if key.code == KeyCode::Enter
+            && key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
+        {
+            return self.send();
+        }
+
+        // Ctrl+<n> jumps to panel n from anywhere; a bare <n> does so where no text is typed.
+        if let KeyCode::Char(c @ '1'..='9') = key.code {
+            let typing = matches!(
+                self.focus,
+                Focus::Url | Focus::Body | Focus::Headers | Focus::Schema
+            );
+            let ctrl_only = key.modifiers == KeyModifiers::CONTROL;
+            if (ctrl_only || (!typing && key.modifiers.is_empty()))
+                && let Some(&target) = self.panels().get(c as usize - '1' as usize)
+            {
+                return self.set_focus(target);
+            }
         }
 
         if self.focus == Focus::Schema && self.suggestions_open() && self.suggestion_key(key.code) {
@@ -1163,7 +1197,13 @@ impl App {
             }
         } else if areas.body.contains(at) {
             let view = self.view().request;
-            if let Some(tab) = ui::request_tab_at(areas.body, at, view.headers.len(), view.kind) {
+            if let Some(tab) = ui::request_tab_at(
+                areas.body,
+                at,
+                view.headers.len(),
+                view.kind,
+                self.panels().len() - 1,
+            ) {
                 self.focus_editor(self.editor_focus());
                 self.set_request_tab(tab);
                 self.focus = self.editor_focus();
