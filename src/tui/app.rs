@@ -16,6 +16,7 @@ use crate::client::{
 use crate::history::{History, HistoryEntry, Outcome, Summary};
 use crate::project::{Loaded, Template};
 
+use super::commands::{Action, Command, commands_for};
 use super::complete::{self, Suggestion};
 use super::headers::{Col, HeaderEditor};
 use super::log::{Level, Log};
@@ -211,6 +212,8 @@ pub struct App {
     pub schema_loading: bool,
     /// The method picker, when open.
     pub picker: Option<Picker>,
+    /// The keybindings menu, when open: the selected row of [`App::commands`].
+    pub help: Option<usize>,
     pub live: Option<Outcome>,
     pub preview: Option<HistoryEntry>,
     /// A request (or its schema load) is in flight.
@@ -290,6 +293,7 @@ impl App {
             schema: None,
             schema_loading: false,
             picker: None,
+            help: None,
             live: None,
             preview: None,
             sending: false,
@@ -588,6 +592,18 @@ impl App {
         if self.picker.is_some() {
             return self.picker_key(key.code, ctrl);
         }
+        if self.help.is_some() {
+            return self.help_key(key.code, ctrl);
+        }
+
+        // `?` types a character in text fields, so F1 opens the menu from anywhere.
+        let typing = matches!(
+            self.focus,
+            Focus::Url | Focus::Body | Focus::Headers | Focus::Schema
+        );
+        if key.code == KeyCode::F(1) || (key.code == KeyCode::Char('?') && !typing && !ctrl) {
+            return self.help = Some(0);
+        }
 
         // Ctrl/Cmd+Enter sends from any panel; terminals without the kitty keyboard
         // protocol report Ctrl+Enter as a plain Enter or Ctrl+J, which the editors keep.
@@ -601,10 +617,6 @@ impl App {
 
         // Ctrl+<n> jumps to panel n from anywhere; a bare <n> does so where no text is typed.
         if let KeyCode::Char(c @ '1'..='9') = key.code {
-            let typing = matches!(
-                self.focus,
-                Focus::Url | Focus::Body | Focus::Headers | Focus::Schema
-            );
             let ctrl_only = key.modifiers == KeyModifiers::CONTROL;
             if (ctrl_only || (!typing && key.modifiers.is_empty()))
                 && let Some(&target) = self.panels().get(c as usize - '1' as usize)
@@ -617,34 +629,33 @@ impl App {
             return;
         }
 
-        match (key.code, ctrl) {
-            (KeyCode::Char('c'), true) => return self.should_quit = true,
-            (KeyCode::Char('s'), true) => return self.send(),
-            (KeyCode::Char('n') | KeyCode::Char('p'), true) if self.kind == Kind::Grpc => {
-                return self.open_picker();
-            }
-            (KeyCode::Char('n'), true) => return self.method = self.method.next(),
-            (KeyCode::Char('p'), true) => return self.method = self.method.prev(),
-            (KeyCode::Char('t'), true) => return self.toggle_request_tab(),
-            (KeyCode::Char('g'), true) => return self.toggle_kind(),
-            (KeyCode::Char('l'), true) if self.kind == Kind::Grpc => return self.load_schema(),
-            (KeyCode::Char('x'), true) => return self.cancel_call(),
-            (KeyCode::Char('e'), true) => return self.open_log(),
+        let action = match (key.code, ctrl) {
+            (KeyCode::Char('c'), true) => Some(Action::Quit),
+            (KeyCode::Char('s'), true) => Some(Action::Send),
+            (KeyCode::Char('n'), true) if self.kind == Kind::Grpc => Some(Action::PickMethod),
+            (KeyCode::Char('p'), true) if self.kind == Kind::Grpc => Some(Action::PickMethod),
+            (KeyCode::Char('n'), true) => Some(Action::NextMethod),
+            (KeyCode::Char('p'), true) => Some(Action::PrevMethod),
+            (KeyCode::Char('t'), true) => Some(Action::ToggleRequestTab),
+            (KeyCode::Char('g'), true) => Some(Action::ToggleKind),
+            (KeyCode::Char('l'), true) if self.kind == Kind::Grpc => Some(Action::LoadSchema),
+            (KeyCode::Char('x'), true) => Some(Action::Cancel),
+            (KeyCode::Char('e'), true) => Some(Action::OpenLog),
             (KeyCode::Char('o'), true) if self.kind == Kind::Grpc => {
-                return self.toggle_schema_mode();
+                Some(Action::ToggleSchemaSource)
             }
-            (KeyCode::Char('k'), true) if self.kind == Kind::Grpc => {
-                return self.insecure = !self.insecure;
-            }
-            (KeyCode::PageDown, _) => return self.scroll = self.scroll.saturating_add(5),
-            (KeyCode::PageUp, _) => return self.scroll = self.scroll.saturating_sub(5),
-            (KeyCode::Tab, _) => {
-                return self.set_focus(next_focus(self.focus, self.editor_focus(), self.kind));
-            }
-            (KeyCode::BackTab, _) => {
-                return self.set_focus(prev_focus(self.focus, self.editor_focus(), self.kind));
-            }
-            (KeyCode::Esc, _) => return self.set_focus(Focus::List),
+            (KeyCode::Char('k'), true) if self.kind == Kind::Grpc => Some(Action::ToggleTls),
+            (KeyCode::Tab, _) => Some(Action::NextPanel),
+            (KeyCode::BackTab, _) => Some(Action::PrevPanel),
+            (KeyCode::Esc, _) => Some(Action::BackToList),
+            _ => None,
+        };
+        if let Some(action) = action {
+            return self.run_action(action);
+        }
+        match key.code {
+            KeyCode::PageDown => return self.scroll = self.scroll.saturating_add(5),
+            KeyCode::PageUp => return self.scroll = self.scroll.saturating_sub(5),
             _ => {}
         }
 
@@ -665,6 +676,61 @@ impl App {
             Focus::Schema => self.schema_input(key),
             Focus::Method => self.method_key(key.code),
             Focus::Response => self.response_key(key.code),
+        }
+    }
+
+    pub fn run_action(&mut self, action: Action) {
+        match action {
+            Action::Quit => self.should_quit = true,
+            Action::Send => self.send(),
+            Action::PickMethod => self.open_picker(),
+            Action::NextMethod => self.method = self.method.next(),
+            Action::PrevMethod => self.method = self.method.prev(),
+            Action::ToggleRequestTab => self.toggle_request_tab(),
+            Action::ToggleKind => self.toggle_kind(),
+            Action::LoadSchema => self.load_schema(),
+            Action::Cancel => self.cancel_call(),
+            Action::OpenLog => self.open_log(),
+            Action::ToggleSchemaSource => self.toggle_schema_mode(),
+            Action::ToggleTls => self.insecure = !self.insecure,
+            Action::NextPanel => {
+                self.set_focus(next_focus(self.focus, self.editor_focus(), self.kind));
+            }
+            Action::PrevPanel => {
+                self.set_focus(prev_focus(self.focus, self.editor_focus(), self.kind));
+            }
+            Action::BackToList => self.set_focus(Focus::List),
+        }
+    }
+
+    /// The rows of the keybindings menu for the current mode.
+    pub fn commands(&self) -> Vec<&'static Command> {
+        commands_for(self.kind)
+    }
+
+    fn help_key(&mut self, code: KeyCode, ctrl: bool) {
+        let len = self.commands().len();
+        let Some(sel) = self.help else {
+            return;
+        };
+        match (code, ctrl) {
+            (KeyCode::Char('c'), true) => self.should_quit = true,
+            (KeyCode::Esc | KeyCode::Char('q' | '?') | KeyCode::F(1), _) => self.help = None,
+            (KeyCode::Down | KeyCode::Char('j'), _) => {
+                self.help = Some((sel + 1).min(len.saturating_sub(1)));
+            }
+            (KeyCode::Up | KeyCode::Char('k'), _) => self.help = Some(sel.saturating_sub(1)),
+            (KeyCode::PageDown, _) => self.help = Some((sel + 8).min(len.saturating_sub(1))),
+            (KeyCode::PageUp, _) => self.help = Some(sel.saturating_sub(8)),
+            (KeyCode::Home | KeyCode::Char('g'), _) => self.help = Some(0),
+            (KeyCode::End | KeyCode::Char('G'), _) => self.help = Some(len.saturating_sub(1)),
+            (KeyCode::Enter, _) => {
+                self.help = None;
+                if let Some(command) = self.commands().get(sel) {
+                    self.run_action(command.action);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1038,6 +1104,9 @@ impl App {
     fn handle_mouse_event(&mut self, event: MouseEvent, screen: Rect) {
         let areas = ui::areas_for(screen, self.view().request.kind);
         let at = Position::new(event.column, event.row);
+        if self.help.is_some() {
+            return;
+        }
         if self.picker.is_some() {
             return self.picker_mouse(event, screen);
         }

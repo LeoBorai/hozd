@@ -121,6 +121,7 @@ proto_include = ["~/work/protos"]
 | ----------------- | ---------------------------------------- |
 | `Tab` / `S-Tab`   | Cycle focus: list, URL, body             |
 | `Esc`             | Back to the list                         |
+| `?` / `F1`        | Open the keybindings menu: `Up`/`Down` pick a row, `Enter` runs it, `Esc` closes (`?` types a character in text fields, use `F1` there) |
 | `[` `]` / `h` `l` | Switch Stored / History tab (list)       |
 | `j` `k` / arrows  | Move selection (list)                    |
 | `Enter`           | Load the selected entry into the editor (list); send (URL field) |

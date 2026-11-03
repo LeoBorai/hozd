@@ -2515,3 +2515,51 @@ fn every_grpc_key_is_documented_in_the_readme() {
         assert!(readme.contains(key), "README lacks {key}");
     }
 }
+
+#[tokio::test]
+async fn question_mark_opens_the_keybindings_menu_and_enter_runs_a_row() {
+    let mut h = harness().await;
+    h.app.handle_key(key(KeyCode::Char('?')));
+    assert_eq!(h.app.help, Some(0));
+    let out = text(&render(&h.app, 120, 30));
+    assert!(
+        out.contains("Keybindings") && out.contains("<ctrl+s>") && out.contains("Send the request"),
+        "{out}"
+    );
+
+    // Rows are listed in `commands()` order; run "Focus next panel" (the first).
+    assert_eq!(h.app.focus, Focus::List);
+    h.app.handle_key(key(KeyCode::Enter));
+    assert_eq!(h.app.help, None);
+    assert_eq!(h.app.focus, Focus::Url);
+
+    // Down moves the selection; Esc closes without running.
+    h.app.handle_key(key(KeyCode::F(1)));
+    h.app.handle_key(key(KeyCode::Down));
+    assert_eq!(h.app.help, Some(1));
+    h.app.handle_key(key(KeyCode::Esc));
+    assert_eq!(h.app.help, None);
+    assert_eq!(h.app.focus, Focus::Url);
+}
+
+#[tokio::test]
+async fn question_mark_types_in_text_fields_and_f1_opens_the_menu() {
+    let mut h = harness().await;
+    h.app.handle_key(key(KeyCode::Tab));
+    assert_eq!(h.app.focus, Focus::Url);
+    h.app.handle_key(key(KeyCode::Char('?')));
+    assert_eq!(h.app.help, None);
+    assert!(h.app.url_text().contains('?'));
+    h.app.handle_key(key(KeyCode::F(1)));
+    assert_eq!(h.app.help, Some(0));
+}
+
+#[tokio::test]
+async fn the_keybindings_menu_lists_only_commands_of_the_current_mode() {
+    let mut h = harness().await;
+    let rest: Vec<_> = h.app.commands().iter().map(|c| c.description).collect();
+    assert!(rest.contains(&"Next HTTP method") && !rest.contains(&"Load the schema"));
+    h.app.handle_key(ctrl('g'));
+    let grpc: Vec<_> = h.app.commands().iter().map(|c| c.description).collect();
+    assert!(grpc.contains(&"Load the schema") && !grpc.contains(&"Next HTTP method"));
+}
