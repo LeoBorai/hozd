@@ -67,7 +67,7 @@ pub const COMMANDS: &[Command] = &[
     ),
     cmd(
         "<ctrl+g>",
-        "Switch between REST and gRPC",
+        "Cycle REST, gRPC and Connect",
         Action::ToggleKind,
         None,
     ),

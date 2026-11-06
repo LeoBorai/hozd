@@ -6,15 +6,15 @@ lazygit/lazydocker-style TUI. Built on [reqwest](https://docs.rs/reqwest),
 
 ```
 +-----------+-----------------------------+-----------+
-| Stored    |  [Method] [URL ............]  | Response  |
-| History   |  Body (JSON)                 | Headers   |
-|  requests |  { "name": "ada" }           | Body      |
+| History   |  [Method] [URL ............]  | Response  |
+|  requests |  Body (JSON)                 | Headers   |
+|           |  { "name": "ada" }           | Body      |
 +-----------+-----------------------------+-----------+
      3                    6                      3
 ```
 
-- **Left**: `Stored` templates and `History`. Moving over an entry previews it: the center
-  panel shows its request, the right panel its response (history only). Nothing is sent.
+- **Left**: `History`. Moving over an entry previews it: the center
+  panel shows its request, the right panel its response. Nothing is sent.
 - **Center**: HTTP method, URL, and a box with two tabs: **Body** (JSON editor with syntax
   highlighting) and **Headers** (name and value inputs, one row per header).
 - **Right**: response status, headers and body.
@@ -97,6 +97,7 @@ authorization = "Bearer token"
 | `method`     | `package.Service/Method`                                                     |
 | `reflection` | `true` to ask the server for its schema (`v1`, falling back to `v1alpha`)    |
 | `schema`     | Alternative to `reflection`: path of a `.proto` file or a compiled descriptor set (`.bin`, `.pb`, `.desc`), relative to the template file |
+| `protocol`   | `"grpc"` (default) or `"connect"` for ConnectRPC                              |
 | `insecure`   | `true` to skip TLS certificate verification (self-signed development servers) |
 | `[metadata]` | gRPC request metadata, like HTTP headers                                     |
 | `body`       | A JSON object; for client and bidirectional streaming a JSON array, one element per message |
@@ -122,7 +123,6 @@ proto_include = ["~/work/protos"]
 | `Tab` / `S-Tab`   | Cycle focus: list, URL, body             |
 | `Esc`             | Back to the list                         |
 | `?` / `F1`        | Open the keybindings menu: `Up`/`Down` pick a row, `Enter` runs it, `Esc` closes (`?` types a character in text fields, use `F1` there) |
-| `[` `]` / `h` `l` | Switch Stored / History tab (list)       |
 | `j` `k` / arrows  | Move selection (list)                    |
 | `Enter`           | Load the selected entry into the editor (list); send (URL field) |
 | `Ctrl+S` / `Ctrl+Enter` / `Cmd+Enter` | Send the request (`Ctrl+Enter` needs a kitty-protocol terminal) |
@@ -130,7 +130,7 @@ proto_include = ["~/work/protos"]
 | `1`..`9`          | Same, but only outside text fields |
 | `Ctrl+N` / `Ctrl+P` | Next / previous HTTP method            |
 | `Ctrl+T`          | Switch the request box between Body and Headers (Metadata in gRPC) |
-| `Ctrl+G`          | Switch the request between REST and gRPC |
+| `Ctrl+G`          | Cycle the request between REST, gRPC and Connect |
 | Drag (reading panel) | Select text; it is copied to the clipboard on release (`y` copies the selection, or everything if none) |
 | `Ctrl+E` / click the Logs box | Open the log in the reading panel (newest last) |
 | `Enter` (response focus) | Open the response body in the reading panel |
@@ -158,6 +158,9 @@ Three more boxes appear: the schema source, the method, and the TLS state.
    streaming take a JSON array, one element per message, sent in one go. Responses stream
    in as they arrive, numbered; `Ctrl+X` cancels the call (status `CANCELLED`).
 
+The `Connect` tab (`Ctrl+G` cycles REST, gRPC, Connect) selects **ConnectRPC** (JSON over HTTP; unary and server streaming
+only, no client or bidirectional streaming). Schema loading is unchanged: reflection or a file.
+
 `Ctrl+K` (or a click on the TLS box) turns on **insecure** mode, which skips certificate
 verification for self-signed development servers; the address box then says `NOT VERIFIED`.
 The copy action and the reading panel give the single message of a unary or client streaming
@@ -179,7 +182,6 @@ call, and a JSON array of all messages for server and bidirectional streaming.
 
 | Click                          | Action                                              |
 | ------------------------------ | --------------------------------------------------- |
-| `Stored` / `History` tab       | Switch tab                                          |
 | List item                      | Select and preview; click again to load into editor |
 | Method box                     | Next method (right-click: previous); TLS box in gRPC toggles insecure |
 | `REST` / `gRPC` label          | Switch the request kind                             |
