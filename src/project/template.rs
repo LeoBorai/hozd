@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::client::{GrpcRequest, Header, HttpRequest, Method, Protocol, Request, SchemaSource};
+use crate::client::{
+    GrpcRequest, Header, HttpRequest, Method, Protocol, Request, SchemaSource, WsRequest,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TemplateError {
@@ -15,7 +17,8 @@ pub enum TemplateError {
     Invalid(String),
 }
 
-/// A request template as stored in a project's TOML file: HTTP (the default) or gRPC.
+/// A request template as stored in a project's TOML file: HTTP (the default), gRPC or
+/// WebSocket.
 ///
 /// `body` must come before any `[table]`, otherwise TOML makes it a key of that table.
 ///
@@ -51,6 +54,19 @@ pub enum TemplateError {
 /// [metadata]
 /// authorization = "Bearer token"
 /// ```
+///
+/// A WebSocket template has `kind = "ws"` and a `ws://` or `wss://` `url`. The optional `body`
+/// is sent as a text message once the socket opens.
+///
+/// ```text
+/// name = "Echo"
+/// kind = "ws"
+/// url = "wss://echo.websocket.org"
+/// body = "hello"
+///
+/// [headers]
+/// Authorization = "Bearer token"
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Template {
     pub name: String,
@@ -61,11 +77,19 @@ pub struct Template {
 pub enum TemplateKind {
     Http(HttpTemplate),
     Grpc(GrpcTemplate),
+    Ws(WsTemplate),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpTemplate {
     pub method: Method,
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WsTemplate {
     pub url: String,
     pub headers: BTreeMap<String, String>,
     pub body: Option<String>,
@@ -170,9 +194,22 @@ impl Template {
                     body: raw.body,
                 })
             }
+            "ws" => {
+                let url = raw.url.ok_or_else(|| missing("url"))?;
+                if !(url.starts_with("ws://") || url.starts_with("wss://")) {
+                    return Err(invalid(format!(
+                        "`{url}` is not a WebSocket URL; it must start with `ws://` or `wss://`"
+                    )));
+                }
+                TemplateKind::Ws(WsTemplate {
+                    url,
+                    headers: raw.headers,
+                    body: raw.body,
+                })
+            }
             other => {
                 return Err(invalid(format!(
-                    "unknown template kind `{other}`; expected `http` or `grpc`"
+                    "unknown template kind `{other}`; expected `http`, `grpc` or `ws`"
                 )));
             }
         };
@@ -203,6 +240,11 @@ impl Template {
                 metadata: pairs(&t.metadata),
                 body: t.body.clone(),
             }),
+            TemplateKind::Ws(t) => Request::Ws(WsRequest {
+                url: t.url.clone(),
+                headers: pairs(&t.headers),
+                body: t.body.clone(),
+            }),
         }
     }
 }
@@ -227,6 +269,26 @@ mod tests {
             TemplateKind::Grpc(g) => g,
             other => panic!("expected a gRPC template, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn websocket_template_parses_to_a_request() {
+        let t = Template::parse(
+            "name = \"Echo\"\nkind = \"ws\"\nurl = \"wss://x/y\"\nbody = \"hi\"\n[headers]\nA = \"1\"\n",
+        )
+        .unwrap();
+        let Request::Ws(req) = t.to_request() else {
+            panic!("expected a WebSocket request");
+        };
+        assert_eq!(req.url, "wss://x/y");
+        assert_eq!(req.body.as_deref(), Some("hi"));
+        assert_eq!(req.headers, vec![Header::new("A", "1")]);
+    }
+
+    #[test]
+    fn websocket_template_needs_a_ws_url() {
+        let err = Template::parse("name = \"x\"\nkind = \"ws\"\nurl = \"http://x\"\n").unwrap_err();
+        assert!(err.to_string().contains("ws://"), "{err}");
     }
 
     #[test]

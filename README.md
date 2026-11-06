@@ -1,6 +1,6 @@
 # hozd
 
-A terminal HTTP and gRPC client in the spirit of cURL and grpcurl, with a
+A terminal HTTP, gRPC and WebSocket client in the spirit of cURL and grpcurl, with a
 lazygit/lazydocker-style TUI. Built on [reqwest](https://docs.rs/reqwest),
 [tonic](https://docs.rs/tonic) and [ratatui](https://ratatui.rs).
 
@@ -102,6 +102,19 @@ authorization = "Bearer token"
 | `[metadata]` | gRPC request metadata, like HTTP headers                                     |
 | `body`       | A JSON object; for client and bidirectional streaming a JSON array, one element per message |
 
+A WebSocket template has `kind = "ws"` and a `ws://` or `wss://` `url`. `body`, if set, is
+sent as a text message once the socket opens:
+
+```toml
+name = "Echo"
+kind = "ws"
+url = "wss://echo.websocket.org"
+body = "hello"
+
+[headers]
+Authorization = "Bearer token"
+```
+
 Set exactly one of `reflection` and `schema`. A `.proto` file is compiled by hozd itself, no
 `protoc` needed; a descriptor set is what `protoc --include_imports --descriptor_set_out=`
 writes.
@@ -130,7 +143,7 @@ proto_include = ["~/work/protos"]
 | `1`..`9`          | Same, but only outside text fields |
 | `Ctrl+N` / `Ctrl+P` | Next / previous HTTP method            |
 | `Ctrl+T`          | Switch the request box between Body and Headers (Metadata in gRPC) |
-| `Ctrl+G`          | Cycle the request between REST, gRPC and Connect |
+| `Ctrl+G`          | Cycle the request between REST, gRPC, Connect and WebSocket |
 | Drag (reading panel) | Select text; it is copied to the clipboard on release (`y` copies the selection, or everything if none) |
 | `Ctrl+E` / click the Logs box | Open the log in the reading panel (newest last) |
 | `Enter` (response focus) | Open the response body in the reading panel |
@@ -160,6 +173,20 @@ Three more boxes appear: the schema source, the method, and the TLS state.
 
 The `Connect` tab (`Ctrl+G` cycles REST, gRPC, Connect) selects **ConnectRPC** (JSON over HTTP; unary and server streaming
 only, no client or bidirectional streaming). Schema loading is unchanged: reflection or a file.
+
+### WebSocket
+
+`Ctrl+G` (or a click on `WS`) switches the request to WebSocket. The URL is a `ws://` or
+`wss://` address, the headers are sent with the upgrade request, and the body is the message.
+
+1. `Ctrl+S` opens the socket and sends the body, if there is one. The Socket box reads `OPEN`.
+2. While it is open, `Ctrl+S` sends the body again: edit it and send as often as you like.
+   The response body is the conversation, `->` for what you sent and `<-` for what arrived,
+   live as it happens.
+3. `Ctrl+X` closes the socket (a normal close frame). A close from the server ends the session
+   too. The session is saved to history with its whole transcript.
+
+Text frames only are sent; binary frames received are shown as lossy UTF-8.
 
 `Ctrl+K` (or a click on the TLS box) turns on **insecure** mode, which skips certificate
 verification for self-signed development servers; the address box then says `NOT VERIFIED`.

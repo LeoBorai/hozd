@@ -60,7 +60,7 @@ pub async fn connect(address: &str, insecure: bool) -> Result<Channel, GrpcError
 
 /// Several crates in the build enable different rustls providers, so rustls cannot pick a
 /// process default by itself; choose `ring` once.
-fn install_crypto_provider() {
+pub(crate) fn install_crypto_provider() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();

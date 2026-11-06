@@ -1373,6 +1373,11 @@ async fn ctrl_g_switches_kind_keeping_address_body_and_headers() {
     assert_eq!(h.app.url_text(), url);
 
     h.app.handle_key(ctrl('g'));
+    assert_eq!(h.app.kind, Kind::Ws);
+    assert_eq!(h.app.url_text(), url);
+    assert_eq!(h.app.editor_ws_request().url, "http://x/t");
+
+    h.app.handle_key(ctrl('g'));
     assert_eq!(h.app.kind, Kind::Http);
     assert_eq!(h.app.url_text(), url);
 }
@@ -1381,8 +1386,8 @@ async fn ctrl_g_switches_kind_keeping_address_body_and_headers() {
 async fn clicking_the_kind_labels_switches_kind() {
     let mut h = harness().await;
     let url = ui::areas(SCREEN).url;
-    // The labels sit right-aligned in the top border of the URL box: ` REST | gRPC | Connect `.
-    let start = url.right() - 1 - " REST | gRPC | Connect ".len() as u16;
+    // The labels sit right-aligned in the top border of the URL box: ` REST | gRPC | Connect | WS `.
+    let start = url.right() - 1 - " REST | gRPC | Connect | WS ".len() as u16;
 
     click(&mut h.app, start + 9, url.y); // inside `gRPC`
     assert_eq!(h.app.kind, Kind::Grpc);
@@ -1397,6 +1402,8 @@ async fn clicking_the_kind_labels_switches_kind() {
         (h.app.kind, h.app.protocol),
         (Kind::Grpc, Protocol::Connect)
     );
+    click(&mut h.app, start + 25, url.y); // inside `WS`
+    assert_eq!(h.app.kind, Kind::Ws);
     click(&mut h.app, start + 2, url.y); // inside `REST`
     assert_eq!(h.app.kind, Kind::Http);
 

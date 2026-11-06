@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
@@ -11,7 +12,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::client::{
     CallEvent, CallKind, GrpcOutcome, GrpcRequest, GrpcStatus, Header, HttpRequest, Kind, Method,
-    Protocol, Request, Schema, SchemaSource, SharedGrpc, SharedHttp, Trace,
+    Protocol, Request, Schema, SchemaSource, SharedGrpc, SharedHttp, SharedWs, Trace,
+    TungsteniteWs, WsEvent, WsOutcome, WsRequest,
 };
 use crate::history::{History, HistoryEntry, Outcome, Summary};
 use crate::project::{Loaded, Template};
@@ -92,6 +94,8 @@ pub enum Msg {
     Sent(Outcome),
     /// A gRPC call made progress; the last event of a call is `Done`.
     GrpcEvent(CallEvent),
+    /// A WebSocket session made progress; the last event of a session is `Done`.
+    WsEvent(WsEvent),
     /// The result of a schema load started for `SchemaKey`.
     SchemaLoaded(SchemaKey, Result<Schema, String>),
     History(Vec<Summary>),
@@ -161,6 +165,14 @@ impl From<&Request> for RequestView {
                     insecure: r.insecure,
                     protocol: r.protocol,
                 },
+            },
+            Request::Ws(r) => Self {
+                kind: Kind::Ws,
+                method: Method::default(),
+                url: r.url.clone(),
+                headers: r.headers.clone(),
+                body: r.body.clone().unwrap_or_default(),
+                grpc: GrpcView::default(),
             },
         }
     }
@@ -245,6 +257,9 @@ pub struct App {
 
     client: SharedHttp,
     grpc: SharedGrpc,
+    ws: SharedWs,
+    /// Sends messages into the open WebSocket session; `None` when there is none.
+    ws_out: Option<UnboundedSender<String>>,
     store: History,
     tx: UnboundedSender<Msg>,
 }
@@ -318,6 +333,8 @@ impl App {
             last_click: None,
             client,
             grpc,
+            ws: Arc::new(TungsteniteWs::new()),
+            ws_out: None,
             store,
             tx,
         };
@@ -328,6 +345,17 @@ impl App {
         app.log.push(Level::Info, "ready");
         app.refresh_history();
         app
+    }
+
+    /// Replaces the WebSocket client, for tests.
+    pub fn with_ws(mut self, ws: SharedWs) -> Self {
+        self.ws = ws;
+        self
+    }
+
+    /// Whether a WebSocket session is open (or opening).
+    pub fn ws_open(&self) -> bool {
+        self.ws_out.is_some()
     }
 
     // ---- derived state -------------------------------------------------
@@ -405,6 +433,25 @@ impl App {
             .map(|m| m.kind)
     }
 
+    /// The WebSocket request as edited; header lines that are not `Name: value` are skipped.
+    pub fn editor_ws_request(&self) -> WsRequest {
+        self.build_ws_request(self.headers.parse_lenient())
+    }
+
+    /// Like [`editor_ws_request`](Self::editor_ws_request) but fails on an invalid header line.
+    pub fn try_ws_request(&self) -> Result<WsRequest, String> {
+        Ok(self.build_ws_request(self.headers.parse()?))
+    }
+
+    fn build_ws_request(&self, headers: Vec<Header>) -> WsRequest {
+        let body = self.body_text();
+        WsRequest {
+            url: self.url_text().trim().to_owned(),
+            headers,
+            body: (!body.is_empty()).then_some(body),
+        }
+    }
+
     /// The gRPC request as edited; metadata lines that are not `Name: value` are skipped.
     pub fn editor_grpc_request(&self) -> GrpcRequest {
         self.build_grpc_request(self.headers.parse_lenient())
@@ -433,6 +480,7 @@ impl App {
         match self.kind {
             Kind::Http => (&self.editor_request()).into(),
             Kind::Grpc => (&Request::Grpc(self.editor_grpc_request())).into(),
+            Kind::Ws => (&Request::Ws(self.editor_ws_request())).into(),
         }
     }
 
@@ -517,6 +565,7 @@ impl App {
                 self.live = Some(outcome);
             }
             Msg::GrpcEvent(event) => self.apply_event(event),
+            Msg::WsEvent(event) => self.apply_ws_event(event),
             Msg::SchemaLoaded(key, result) => {
                 self.schema_loading = false;
                 match result {
@@ -583,6 +632,17 @@ impl App {
                 (None, Some(error)) => self.log.push(Level::Error, format!("failed: {error}")),
                 (None, None) => self.log.push(Level::Error, "failed"),
             },
+            Outcome::Ws(w) => match (&w.error, &w.close) {
+                (Some(error), _) => self.log.push(Level::Error, format!("failed: {error}")),
+                (None, Some(close)) => self.log.push(
+                    Level::Info,
+                    format!("<- {close} after {} ms", w.elapsed.as_millis()),
+                ),
+                (None, None) => self.log.push(
+                    Level::Info,
+                    format!("<- closed after {} ms", w.elapsed.as_millis()),
+                ),
+            },
             Outcome::Error(message) => self.log.push(Level::Error, format!("failed: {message}")),
         }
     }
@@ -648,8 +708,8 @@ impl App {
             (KeyCode::Char('s'), true) => Some(Action::Send),
             (KeyCode::Char('n'), true) if self.kind == Kind::Grpc => Some(Action::PickMethod),
             (KeyCode::Char('p'), true) if self.kind == Kind::Grpc => Some(Action::PickMethod),
-            (KeyCode::Char('n'), true) => Some(Action::NextMethod),
-            (KeyCode::Char('p'), true) => Some(Action::PrevMethod),
+            (KeyCode::Char('n'), true) if self.kind == Kind::Http => Some(Action::NextMethod),
+            (KeyCode::Char('p'), true) if self.kind == Kind::Http => Some(Action::PrevMethod),
             (KeyCode::Char('t'), true) => Some(Action::ToggleRequestTab),
             (KeyCode::Char('g'), true) => Some(Action::ToggleKind),
             (KeyCode::Char('l'), true) if self.kind == Kind::Grpc => Some(Action::LoadSchema),
@@ -979,6 +1039,7 @@ impl App {
             Some(Outcome::Response(r)) => r.body.clone(),
             Some(Outcome::Error(message)) => message.clone(),
             Some(Outcome::Grpc(g)) => g.body_text(),
+            Some(Outcome::Ws(w)) => w.body_text(),
             None => {
                 self.notice = Some("no response to open".into());
                 return;
@@ -1032,13 +1093,14 @@ impl App {
         }
     }
 
-    /// Cycles the editor through REST, gRPC and Connect. The address/URL, body and
+    /// Cycles the editor through REST, gRPC, Connect and WebSocket. The address/URL, body and
     /// headers/metadata texts are kept.
     pub fn toggle_kind(&mut self) {
         let (kind, protocol) = match (self.kind, self.protocol) {
             (Kind::Http, _) => (Kind::Grpc, Protocol::Grpc),
             (Kind::Grpc, Protocol::Grpc) => (Kind::Grpc, Protocol::Connect),
-            (Kind::Grpc, Protocol::Connect) => (Kind::Http, Protocol::Grpc),
+            (Kind::Grpc, Protocol::Connect) => (Kind::Ws, Protocol::Grpc),
+            (Kind::Ws, _) => (Kind::Http, Protocol::Grpc),
         };
         self.protocol = protocol;
         self.set_kind(kind);
@@ -1093,6 +1155,7 @@ impl App {
             Some(Outcome::Response(r)) => pretty(&r.body),
             Some(Outcome::Error(message)) => message.clone(),
             Some(Outcome::Grpc(g)) => pretty(&g.body_text()),
+            Some(Outcome::Ws(w)) => w.body_text(),
             None => String::new(),
         };
         if text.is_empty() {
@@ -1245,6 +1308,7 @@ impl App {
             match self.kind {
                 Kind::Http => self.method = self.method.next(),
                 Kind::Grpc => self.insecure = !self.insecure,
+                Kind::Ws => {}
             }
         } else if areas.schema.contains(at) {
             self.focus_editor(Focus::Schema);
@@ -1441,9 +1505,21 @@ impl App {
         let request = match request {
             Request::Http(request) => request,
             Request::Grpc(request) => return self.load_grpc_request(request),
+            Request::Ws(request) => return self.load_ws_request(request),
         };
         self.set_kind(Kind::Http);
         self.method = request.method;
+        self.url = single_line(&request.url);
+        self.body = request
+            .body
+            .as_deref()
+            .map(|b| TextArea::new(b.lines().map(str::to_owned).collect()))
+            .unwrap_or_default();
+        self.headers = HeaderEditor::from_headers(&request.headers);
+    }
+
+    fn load_ws_request(&mut self, request: &WsRequest) {
+        self.set_kind(Kind::Ws);
         self.url = single_line(&request.url);
         self.body = request
             .body
@@ -1484,6 +1560,91 @@ impl App {
         match self.kind {
             Kind::Http => self.send_http(),
             Kind::Grpc => self.send_grpc(),
+            Kind::Ws => self.send_ws(),
+        }
+    }
+
+    /// Opens the socket; once it is open, sends the body as a text message.
+    fn send_ws(&mut self) {
+        if let Some(out) = &self.ws_out {
+            let text = self.body_text();
+            if text.is_empty() {
+                self.status = Some("type a message in the body first".into());
+            } else if out.send(text).is_err() {
+                self.status = Some("the socket is closed".into());
+            }
+            return;
+        }
+        let request = match self.try_ws_request() {
+            Ok(request) => request,
+            Err(message) => {
+                self.status = Some(message);
+                self.request_tab = RequestTab::Headers;
+                self.set_focus(Focus::Headers);
+                return;
+            }
+        };
+        if request.url.is_empty() {
+            self.status = Some("enter a ws:// or wss:// URL first".into());
+            return;
+        }
+        self.sending = true;
+        self.status = None;
+        self.scroll = 0;
+        self.log.push(Level::Info, format!("-> WS {}", request.url));
+        self.live = Some(Outcome::Ws(WsOutcome::default()));
+
+        let mut session = self.ws.connect(request.clone());
+        self.ws_out = Some(session.sender());
+        self.cancel = Some(session.canceller());
+        let (store, tx) = (self.store.clone(), self.tx.clone());
+        tokio::spawn(async move {
+            let mut last = None;
+            while let Some(event) = session.events.recv().await {
+                if let WsEvent::Done(outcome) = &event {
+                    last = Some(outcome.clone());
+                }
+                let _ = tx.send(Msg::WsEvent(event));
+            }
+            let outcome = last.unwrap_or_else(|| WsOutcome {
+                error: Some("the session ended without a result".into()),
+                ..Default::default()
+            });
+            if let Err(e) = store
+                .record(&Request::Ws(request), &Outcome::Ws(outcome))
+                .await
+            {
+                let _ = tx.send(Msg::Failed(format!("could not save history: {e}")));
+            }
+            record_done(&store, &tx).await;
+        });
+    }
+
+    fn apply_ws_event(&mut self, event: WsEvent) {
+        match event {
+            WsEvent::Log(line) => self.log.push(Level::Detail, line),
+            WsEvent::Connected(headers) => {
+                self.sending = false;
+                self.log.push(Level::Info, "connected");
+                self.notice = Some("connected; Ctrl+S sends the body, Ctrl+X closes".into());
+                if let Some(Outcome::Ws(live)) = &mut self.live {
+                    live.connected = true;
+                    live.headers = headers;
+                }
+            }
+            WsEvent::Message(message) => {
+                if let Some(Outcome::Ws(live)) = &mut self.live {
+                    live.messages.push(message);
+                }
+            }
+            WsEvent::Done(outcome) => {
+                self.log_outcome(&Outcome::Ws(outcome.clone()));
+                self.sending = false;
+                self.ws_out = None;
+                self.cancel = None;
+                self.scroll = 0;
+                self.live = Some(Outcome::Ws(outcome));
+            }
         }
     }
 
@@ -1677,7 +1838,7 @@ impl App {
 fn next_focus(f: Focus, editor: Focus, kind: Kind) -> Focus {
     match (f, kind) {
         (Focus::List, _) => Focus::Url,
-        (Focus::Url, Kind::Http) => editor,
+        (Focus::Url, Kind::Http | Kind::Ws) => editor,
         (Focus::Url, Kind::Grpc) => Focus::Schema,
         (Focus::Schema, _) => Focus::Method,
         (Focus::Method, _) => editor,
@@ -1692,7 +1853,7 @@ fn prev_focus(f: Focus, editor: Focus, kind: Kind) -> Focus {
         (Focus::Url, _) => Focus::List,
         (Focus::Schema, _) => Focus::Url,
         (Focus::Method, _) => Focus::Schema,
-        (Focus::Body | Focus::Headers, Kind::Http) => Focus::Url,
+        (Focus::Body | Focus::Headers, Kind::Http | Kind::Ws) => Focus::Url,
         (Focus::Body | Focus::Headers, Kind::Grpc) => Focus::Method,
         (Focus::Response, _) => editor,
     }

@@ -80,7 +80,7 @@ fn center_areas(center: Rect, kind: Kind) -> Center {
         Layout::horizontal([Constraint::Length(12), Constraint::Min(10)]).areas::<2>(top)
     };
     match kind {
-        Kind::Http => {
+        Kind::Http | Kind::Ws => {
             let [top, body] =
                 Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(center);
             let [method, url] = top_row(top);
@@ -191,7 +191,7 @@ pub fn areas_for(area: Rect, kind: Kind) -> Areas {
 }
 
 /// The kind selector in the top border of the URL box, right-aligned.
-const KIND_LABEL: &str = " REST | gRPC | Connect ";
+const KIND_LABEL: &str = " REST | gRPC | Connect | WS ";
 
 /// Which kind label sits under `at`: the selector is drawn in the top border of the URL
 /// box (`url` is its outer rect), right-aligned and one column short of the corner.
@@ -205,7 +205,8 @@ pub fn kind_at(url: Rect, at: Position) -> Option<(Kind, Protocol)> {
     match offset {
         o if o < 7 => Some((Kind::Http, Protocol::Grpc)),
         o if o < 14 => Some((Kind::Grpc, Protocol::Grpc)),
-        o if o < width => Some((Kind::Grpc, Protocol::Connect)),
+        o if o < 24 => Some((Kind::Grpc, Protocol::Connect)),
+        o if o < width => Some((Kind::Ws, Protocol::Grpc)),
         _ => None,
     }
 }
@@ -249,6 +250,7 @@ fn request_tab_labels(count: usize, kind: Kind, panel: usize) -> (String, String
     let name = match kind {
         Kind::Http => "Headers",
         Kind::Grpc => "Metadata",
+        Kind::Ws => "Headers",
     };
     let second = if count == 0 {
         format!(" {name} ")
@@ -778,6 +780,7 @@ fn stored_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) {
                     Span::styled("Connect", Style::new().fg(Color::Cyan))
                 }
                 TemplateKind::Grpc(_) => Span::styled("gRPC  ", Style::new().fg(Color::Magenta)),
+                TemplateKind::Ws(_) => Span::styled("WS    ", Style::new().fg(Color::Green)),
             },
             Span::raw(format!(" {}", t.template.name)),
         ])));
@@ -807,6 +810,18 @@ fn history_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) {
                     Span::raw(" "),
                     method,
                     Span::raw(format!(" {}", s.url)),
+                ]))
+            }
+            Kind::Ws => {
+                let status = match s.status {
+                    Some(code) => Span::styled(code.to_string(), status_style(code)),
+                    None => Span::styled("ERR", Style::new().fg(Color::Red)),
+                };
+                ListItem::new(Line::from(vec![
+                    status,
+                    Span::raw(" "),
+                    Span::styled("WS   ", Style::new().fg(Color::Green)),
+                    Span::raw(s.url.clone()),
                 ]))
             }
             Kind::Grpc => {
@@ -875,11 +890,28 @@ fn draw_center(
     let center = center_areas(area, request.kind);
 
     let grpc = request.kind == Kind::Grpc;
-    let method_block = block(if grpc { "TLS" } else { "Method" }, false);
+    let ws = request.kind == Kind::Ws;
+    let method_block = block(
+        match (grpc, ws) {
+            (true, _) => "TLS",
+            (_, true) => "Socket",
+            _ => "Method",
+        },
+        false,
+    );
     let method_inner = method_block.inner(center.method);
     frame.render_widget(method_block, center.method);
     let method_text = if grpc {
         tls_span(&request.url, request.grpc.insecure)
+    } else if ws {
+        if app.ws_open() && !previewing {
+            Span::styled(
+                "OPEN",
+                Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled("WS", Style::new().fg(Color::Green))
+        }
     } else {
         method_span(request.method)
     };
@@ -906,6 +938,8 @@ fn draw_address(
         (Kind::Http, true) => "URL (preview)",
         (Kind::Grpc, false) => "Address",
         (Kind::Grpc, true) => "Address (preview)",
+        (Kind::Ws, false) => "URL (ws://)",
+        (Kind::Ws, true) => "URL (ws://) (preview)",
     };
     let selected = Style::new()
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
@@ -914,6 +948,12 @@ fn draw_address(
         (Kind::Http, _) => (selected, Style::new(), Style::new()),
         (Kind::Grpc, Protocol::Grpc) => (Style::new(), selected, Style::new()),
         (Kind::Grpc, Protocol::Connect) => (Style::new(), Style::new(), selected),
+        (Kind::Ws, _) => (Style::new(), Style::new(), Style::new()),
+    };
+    let ws_style = if request.kind == Kind::Ws {
+        selected
+    } else {
+        Style::new()
     };
     let mut title_spans = vec![Span::raw(format!(
         " {} ",
@@ -937,6 +977,8 @@ fn draw_address(
             Span::styled("gRPC", grpc_style),
             Span::raw(" | "),
             Span::styled("Connect", connect_style),
+            Span::raw(" | "),
+            Span::styled("WS", ws_style),
             Span::raw(" "),
         ])
         .right_aligned(),
@@ -1250,6 +1292,17 @@ fn draw_right(frame: &mut Frame, app: &App, outcome: Option<&Outcome>, area: Rec
     let status_inner = status_block.inner(status_area);
     frame.render_widget(status_block, status_area);
     let status_line = match outcome {
+        Some(Outcome::Ws(w)) if app.ws_open() && !app.sending => {
+            let mut spans = vec![
+                Span::styled(
+                    "OPEN",
+                    Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!("  {} messages", w.messages.len())),
+            ];
+            spans.push(Span::styled("  ^X close", Style::new().fg(Color::Yellow)));
+            Line::from(spans)
+        }
         Some(Outcome::Grpc(g)) if app.sending => {
             let label = if g.messages.is_empty() && !g.response_stream {
                 "sending...".to_owned()
@@ -1292,6 +1345,26 @@ fn draw_right(frame: &mut Frame, app: &App, outcome: Option<&Outcome>, area: Rec
             ]),
             None => Line::styled("failed", Style::new().fg(Color::Red)),
         },
+        Some(Outcome::Ws(w)) => match (&w.error, w.connected) {
+            (Some(_), false) => Line::styled("failed", Style::new().fg(Color::Red)),
+            (Some(_), true) => Line::from(vec![
+                Span::styled(
+                    "ERROR",
+                    Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!("  {} ms", w.elapsed.as_millis())),
+            ]),
+            (None, _) => Line::from(vec![
+                Span::styled(
+                    match &w.close {
+                        Some(c) => format!("CLOSED ({})", c.code),
+                        None => "CLOSED".to_owned(),
+                    },
+                    Style::new().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!("  {} ms", w.elapsed.as_millis())),
+            ]),
+        },
         Some(Outcome::Error(_)) => Line::styled("failed", Style::new().fg(Color::Red)),
         None => Line::styled("no response yet", Style::new().fg(Color::DarkGray)),
     };
@@ -1301,6 +1374,16 @@ fn draw_right(frame: &mut Frame, app: &App, outcome: Option<&Outcome>, area: Rec
     let headers_inner = headers_block.inner(headers_area);
     frame.render_widget(headers_block, headers_area);
     let header_lines: Vec<Line> = match outcome {
+        Some(Outcome::Ws(w)) => w
+            .headers
+            .iter()
+            .map(|h| {
+                Line::from(vec![
+                    Span::styled(format!("{}: ", h.name), Style::new().fg(Color::Cyan)),
+                    Span::raw(h.value.clone()),
+                ])
+            })
+            .collect(),
         Some(Outcome::Response(r)) => r
             .headers
             .iter()
@@ -1339,6 +1422,7 @@ fn draw_right(frame: &mut Frame, app: &App, outcome: Option<&Outcome>, area: Rec
         Some(Outcome::Response(r)) => pretty(&r.body).lines().map(highlight_line).collect(),
         Some(Outcome::Error(msg)) => vec![Line::styled(msg.clone(), Style::new().fg(Color::Red))],
         Some(Outcome::Grpc(g)) => grpc_body_lines(g),
+        Some(Outcome::Ws(w)) => ws_body_lines(w),
         None => Vec::new(),
     };
     let streaming = matches!(outcome, Some(Outcome::Grpc(g)) if !g.messages.is_empty());
@@ -1388,11 +1472,46 @@ fn grpc_body_lines(g: &crate::client::GrpcOutcome) -> Vec<Line<'static>> {
     lines
 }
 
+/// The conversation of a WebSocket session: `->` sent (green), `<-` received (cyan), then
+/// how it ended.
+fn ws_body_lines(w: &crate::client::WsOutcome) -> Vec<Line<'static>> {
+    use crate::client::WsDirection;
+    let mut lines = Vec::new();
+    for message in &w.messages {
+        let (arrow, color) = match message.direction {
+            WsDirection::Sent => ("->", Color::Green),
+            WsDirection::Received => ("<-", Color::Cyan),
+        };
+        let text = pretty(&message.text);
+        let mut body = text.lines().map(highlight_line);
+        let mut first = body.next().unwrap_or_default();
+        first
+            .spans
+            .insert(0, Span::styled(format!("{arrow} "), Style::new().fg(color)));
+        lines.push(first);
+        lines.extend(body.map(|mut l| {
+            l.spans.insert(0, Span::raw("   "));
+            l
+        }));
+    }
+    if let Some(error) = &w.error {
+        lines.push(Line::styled(error.clone(), Style::new().fg(Color::Red)));
+    } else if let Some(close) = &w.close {
+        lines.push(Line::styled(
+            close.to_string(),
+            Style::new().fg(Color::DarkGray),
+        ));
+    }
+    lines
+}
+
 // ---- status bar ------------------------------------------------------------
 
 /// Both fit a 120-column terminal; the README has the full key tables.
 pub const HELP_REST: &str = "Tab focus | Ctrl+G gRPC | [ ] tabs | j/k move | Enter load | Ctrl+S send | Ctrl+N/P method | ? keys | q quit";
 pub const HELP_GRPC: &str = "Ctrl+G REST/gRPC | Ctrl+L schema | Ctrl+N method | Ctrl+S send | Ctrl+X cancel | Ctrl+O source | Ctrl+K TLS | ? keys";
+
+pub const HELP_WS: &str = "Ctrl+G REST/gRPC/WS | Ctrl+S connect, then send body | Ctrl+X close | Ctrl+T headers | Tab focus | ? keys";
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let text = match &app.status {
@@ -1405,6 +1524,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             match app.kind {
                 Kind::Http => HELP_REST,
                 Kind::Grpc => HELP_GRPC,
+                Kind::Ws => HELP_WS,
             },
             Style::new().fg(Color::DarkGray),
         ),
