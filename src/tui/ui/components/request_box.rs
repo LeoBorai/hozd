@@ -10,6 +10,7 @@ use crate::client::Kind;
 
 use crate::tui::app::{App, Focus, RequestTab};
 use crate::tui::headers::{self, Col};
+use crate::tui::syntax_highlight::graphql;
 use crate::tui::syntax_highlight::json::highlight_line;
 
 use super::super::layout::*;
@@ -53,7 +54,7 @@ pub(crate) fn draw_request_box(
     let graphql = request.kind == Kind::Graphql;
     match (app.request_tab, previewing) {
         (RequestTab::Body, true) if graphql => {
-            let lines: Vec<Line> = request.body.lines().map(Line::raw).collect();
+            let lines = graphql::highlight_lines(request.body.lines());
             frame.render_widget(Paragraph::new(lines), body_inner);
         }
         (RequestTab::Body, true) => {
@@ -76,7 +77,11 @@ pub(crate) fn draw_request_box(
             &app.body,
             body_inner,
             app.focus == Focus::Body,
-            if graphql { Syntax::Plain } else { Syntax::Json },
+            if graphql {
+                Syntax::Graphql
+            } else {
+                Syntax::Json
+            },
         ),
         (RequestTab::Variables, false) => render_editor(
             frame,
