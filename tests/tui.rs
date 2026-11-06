@@ -315,6 +315,30 @@ async fn building_a_request_highlights_json_body() {
     assert!(styled("a", Color::Cyan), "key styled");
 }
 
+#[tokio::test]
+async fn graphql_body_is_highlighted_as_graphql() {
+    let mut h = harness().await;
+    while h.app.kind != Kind::Graphql {
+        h.app.handle_key(ctrl('g'));
+    }
+    while h.app.focus != Focus::Body {
+        h.app.handle_key(key(KeyCode::Tab));
+    }
+    type_text(&mut h.app, "query Q($id: ID) @live { user }");
+
+    let buf = render(&h.app, 120, 30);
+    let styled = |sym: &str, color: Color| {
+        buf.content()
+            .iter()
+            .any(|c| c.symbol() == sym && c.fg == color)
+    };
+    assert!(styled("q", Color::Magenta), "keyword styled");
+    assert!(styled("$", Color::LightRed), "variable styled");
+    assert!(styled("I", Color::LightBlue), "type styled");
+    assert!(styled("@", Color::LightMagenta), "directive styled");
+    assert!(styled("u", Color::Cyan), "field styled");
+}
+
 // ---- send ----------------------------------------------------------------
 
 #[tokio::test]
