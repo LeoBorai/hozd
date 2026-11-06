@@ -294,7 +294,7 @@ async fn stored_tab_groups_templates_by_project() {
 #[tokio::test]
 async fn building_a_request_highlights_json_body() {
     let mut h = harness().await;
-    h.app.handle_key(ctrl('n')); // GET -> POST
+    h.app.method = Method::Post;
     h.app.handle_key(key(KeyCode::Tab)); // URL
     type_text(&mut h.app, "http://x/y");
     h.app.handle_key(key(KeyCode::Tab)); // Body
@@ -1378,6 +1378,10 @@ async fn ctrl_g_switches_kind_keeping_address_body_and_headers() {
     assert_eq!(h.app.editor_ws_request().url, "http://x/t");
 
     h.app.handle_key(ctrl('g'));
+    assert_eq!(h.app.kind, Kind::Graphql);
+    assert_eq!(h.app.url_text(), url);
+
+    h.app.handle_key(ctrl('g'));
     assert_eq!(h.app.kind, Kind::Http);
     assert_eq!(h.app.url_text(), url);
 }
@@ -1386,24 +1390,26 @@ async fn ctrl_g_switches_kind_keeping_address_body_and_headers() {
 async fn clicking_the_kind_labels_switches_kind() {
     let mut h = harness().await;
     let url = ui::areas(SCREEN).url;
-    // The labels sit right-aligned in the top border of the URL box: ` REST | gRPC | Connect | WS `.
-    let start = url.right() - 1 - " REST | gRPC | Connect | WS ".len() as u16;
+    // The labels sit right-aligned in the top border of the URL box: ` REST|gRPC|Connect|WS|GQL `.
+    let start = url.right() - 1 - " REST|gRPC|Connect|WS|GQL ".len() as u16;
 
-    click(&mut h.app, start + 9, url.y); // inside `gRPC`
+    click(&mut h.app, start + 8, url.y); // inside `gRPC`
     assert_eq!(h.app.kind, Kind::Grpc);
-    click(&mut h.app, start + 9, url.y);
+    click(&mut h.app, start + 8, url.y);
     assert_eq!(
         h.app.kind,
         Kind::Grpc,
         "clicking the active label changes nothing"
     );
-    click(&mut h.app, start + 17, url.y); // inside `Connect`
+    click(&mut h.app, start + 14, url.y); // inside `Connect`
     assert_eq!(
         (h.app.kind, h.app.protocol),
         (Kind::Grpc, Protocol::Connect)
     );
-    click(&mut h.app, start + 25, url.y); // inside `WS`
+    click(&mut h.app, start + 20, url.y); // inside `WS`
     assert_eq!(h.app.kind, Kind::Ws);
+    click(&mut h.app, start + 23, url.y); // inside `GQL`
+    assert_eq!(h.app.kind, Kind::Graphql);
     click(&mut h.app, start + 2, url.y); // inside `REST`
     assert_eq!(h.app.kind, Kind::Http);
 
@@ -1538,7 +1544,7 @@ async fn grpc_mode_shows_address_schema_method_and_metadata_boxes() {
     let out = grpc_screen(&h.app);
     for expected in [
         "Address",
-        "REST | gRPC",
+        "REST|gRPC",
         "TLS",
         "plain",
         "Schema",
@@ -1558,7 +1564,7 @@ async fn rest_mode_is_unchanged() {
     let mut h = harness().await;
     h.app.load_request(&request_with_headers());
     let out = grpc_screen(&h.app);
-    for expected in ["URL", "Method", "Headers (2)", "REST | gRPC"] {
+    for expected in ["URL", "Method", "Headers (2)", "REST|gRPC"] {
         assert!(out.contains(expected), "missing `{expected}` in:\n{out}");
     }
     for absent in ["Schema", "Address", "Metadata", "TLS"] {
@@ -1871,7 +1877,7 @@ fn picker_names(app: &App) -> Vec<String> {
 #[tokio::test]
 async fn ctrl_n_opens_the_picker_listing_every_method_by_service() {
     let mut h = loaded_grpc_harness().await;
-    h.app.handle_key(ctrl('n'));
+    h.app.handle_key(ctrl('p'));
     assert!(h.app.picker.is_some());
     assert_eq!(
         picker_names(&h.app),
@@ -1892,7 +1898,7 @@ async fn ctrl_n_opens_the_picker_listing_every_method_by_service() {
     assert_eq!(
         h.app.method,
         Method::Get,
-        "Ctrl+N does not cycle HTTP methods in gRPC mode"
+        "Ctrl+P does not cycle HTTP methods in gRPC mode"
     );
 }
 
@@ -1919,7 +1925,7 @@ async fn typing_filters_the_picker_ignoring_case() {
 #[tokio::test]
 async fn picking_into_an_empty_body_fills_the_skeleton() {
     let mut h = loaded_grpc_harness().await;
-    h.app.handle_key(ctrl('n'));
+    h.app.handle_key(ctrl('p'));
     type_text(&mut h.app, "listusers");
     h.app.handle_key(key(KeyCode::Enter));
 
@@ -1940,7 +1946,7 @@ async fn picking_into_an_empty_body_fills_the_skeleton() {
 async fn picking_keeps_a_body_the_user_wrote() {
     let mut h = loaded_grpc_harness().await;
     h.app.body = TextArea::new(vec!["{\"id\": 42}".into()]);
-    h.app.handle_key(ctrl('n'));
+    h.app.handle_key(ctrl('p'));
     type_text(&mut h.app, "getuser");
     h.app.handle_key(key(KeyCode::Enter));
 
@@ -1954,7 +1960,7 @@ async fn picking_keeps_a_body_the_user_wrote() {
 #[tokio::test]
 async fn arrow_keys_move_the_highlight_and_esc_closes_without_picking() {
     let mut h = loaded_grpc_harness().await;
-    h.app.handle_key(ctrl('n'));
+    h.app.handle_key(ctrl('p'));
     h.app.handle_key(key(KeyCode::Down));
     h.app.handle_key(ctrl('n')); // also moves down while open
     assert_eq!(h.app.picker.as_ref().unwrap().selected, 2);
@@ -1973,7 +1979,7 @@ async fn arrow_keys_move_the_highlight_and_esc_closes_without_picking() {
     assert!(h.app.picker.is_none());
     assert_eq!(h.app.selected_method, None);
 
-    h.app.handle_key(ctrl('n'));
+    h.app.handle_key(ctrl('p'));
     h.app.handle_key(key(KeyCode::Down));
     h.app.handle_key(key(KeyCode::Enter));
     assert_eq!(
@@ -1985,7 +1991,7 @@ async fn arrow_keys_move_the_highlight_and_esc_closes_without_picking() {
 #[tokio::test]
 async fn the_picker_needs_a_schema_for_the_current_address() {
     let mut h = grpc_harness(FakeGrpc::default()).await;
-    h.app.handle_key(ctrl('n'));
+    h.app.handle_key(ctrl('p'));
     assert!(h.app.picker.is_none());
     assert_eq!(
         h.app.status.as_deref(),
@@ -1994,7 +2000,7 @@ async fn the_picker_needs_a_schema_for_the_current_address() {
 
     let mut h = loaded_grpc_harness().await;
     h.app.url = TextArea::new(vec!["http://other:1".into()]);
-    h.app.handle_key(ctrl('n'));
+    h.app.handle_key(ctrl('p'));
     assert!(
         h.app.picker.is_none(),
         "a schema loaded for another address is not offered"
@@ -2018,7 +2024,7 @@ async fn the_method_box_opens_the_picker_with_enter_or_a_click() {
 #[tokio::test]
 async fn clicking_a_picker_row_picks_it_and_clicking_outside_closes() {
     let mut h = loaded_grpc_harness().await;
-    h.app.handle_key(ctrl('n'));
+    h.app.handle_key(ctrl('p'));
     let popup = ui::picker_area(SCREEN);
     let list = ui::picker_list_area(popup);
 
@@ -2032,7 +2038,7 @@ async fn clicking_a_picker_row_picks_it_and_clicking_outside_closes() {
         Some("demo.v1.Demo/GetUser")
     );
 
-    h.app.handle_key(ctrl('n'));
+    h.app.handle_key(ctrl('p'));
     click(&mut h.app, 0, 0); // on the left panel
     assert!(h.app.picker.is_none());
     assert_eq!(
@@ -2047,17 +2053,17 @@ async fn sending_without_a_method_asks_for_one_and_sends_nothing() {
     h.app.handle_key(ctrl('s'));
     assert_eq!(
         h.app.status.as_deref(),
-        Some("pick a method first (Ctrl+N)")
+        Some("pick a method first (Ctrl+P)")
     );
     assert!(!h.app.sending);
     assert!(h.grpc.requests().is_empty());
 }
 
 #[tokio::test]
-async fn rest_mode_ctrl_n_still_cycles_methods() {
+async fn rest_mode_ctrl_p_cycles_methods_back() {
     let mut h = harness().await;
-    h.app.handle_key(ctrl('n'));
-    assert_eq!(h.app.method, Method::Post);
+    h.app.handle_key(ctrl('p'));
+    assert_eq!(h.app.method, Method::Options);
     assert!(h.app.picker.is_none());
 }
 
@@ -2502,7 +2508,7 @@ async fn the_status_bar_help_matches_the_mode_and_lists_the_grpc_keys() {
     let mut h = harness().await;
     let rest = grpc_screen(&h.app);
     assert!(
-        rest.contains("Ctrl+G gRPC") && rest.contains("Ctrl+S send"),
+        rest.contains("Ctrl+G kind") && rest.contains("Ctrl+S send"),
         "{rest}"
     );
     assert!(!rest.contains("Ctrl+X"), "{rest}");
@@ -2510,17 +2516,18 @@ async fn the_status_bar_help_matches_the_mode_and_lists_the_grpc_keys() {
     h.app.handle_key(ctrl('g'));
     let grpc = grpc_screen(&h.app);
     for key in [
-        "Ctrl+G REST/gRPC",
+        "Ctrl+G kind",
         "Ctrl+L schema",
-        "Ctrl+N method",
+        "Ctrl+P method",
         "Ctrl+X cancel",
-        "Ctrl+O source",
-        "Ctrl+K TLS",
     ] {
         assert!(grpc.contains(key), "missing `{key}` in:\n{grpc}");
     }
-    // Neither line may be cut off at 120 columns.
-    assert!(ui::HELP_REST.len() <= 120 && ui::HELP_GRPC.len() <= 120);
+    // No line may be cut off at 120 columns, next to the version tag.
+    let room = ui::status_text_width(120);
+    for help in [ui::HELP_REST, ui::HELP_GRPC, ui::HELP_WS, ui::HELP_GRAPHQL] {
+        assert!(help.len() <= room, "{help}");
+    }
 }
 
 #[test]
@@ -2528,12 +2535,7 @@ fn every_grpc_key_is_documented_in_the_readme() {
     let readme =
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
     for key in [
-        "`Ctrl+G`",
-        "`Ctrl+L`",
-        "`Ctrl+O`",
-        "`Ctrl+K`",
-        "`Ctrl+X`",
-        "`Ctrl+N` / `Ctrl+P`",
+        "`Ctrl+G`", "`Ctrl+L`", "`Ctrl+O`", "`Ctrl+K`", "`Ctrl+X`", "`Ctrl+N`", "`Ctrl+P`",
     ] {
         assert!(readme.contains(key), "README lacks {key}");
     }
@@ -2581,8 +2583,71 @@ async fn question_mark_types_in_text_fields_and_f1_opens_the_menu() {
 async fn the_keybindings_menu_lists_only_commands_of_the_current_mode() {
     let mut h = harness().await;
     let rest: Vec<_> = h.app.commands().iter().map(|c| c.description).collect();
-    assert!(rest.contains(&"Next HTTP method") && !rest.contains(&"Load the schema"));
+    assert!(rest.contains(&"Previous HTTP method") && !rest.contains(&"Load the schema"));
     h.app.handle_key(ctrl('g'));
     let grpc: Vec<_> = h.app.commands().iter().map(|c| c.description).collect();
     assert!(grpc.contains(&"Load the schema") && !grpc.contains(&"Next HTTP method"));
+}
+
+#[tokio::test]
+async fn ctrl_n_clears_the_form_for_a_new_request() {
+    let mut h = harness().await;
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "http://x/y");
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "{\"a\":1}");
+    h.app.method = Method::Post;
+    h.app.handle_key(ctrl('s'));
+    pump(&mut h, |a| a.live.is_some()).await;
+
+    h.app.handle_key(ctrl('n'));
+    assert_eq!(h.app.url_text(), "");
+    assert_eq!(h.app.body_text(), "");
+    assert_eq!(h.app.method, Method::Get);
+    assert!(h.app.live.is_none());
+    assert_eq!(h.app.focus, Focus::Url);
+
+    // it works from the list too, and a running request blocks it
+    h.app.handle_key(key(KeyCode::Esc));
+    type_text(&mut h.app, "q"); // list focus: `q` would quit, so only check Ctrl+N below
+    h.app.should_quit = false;
+    h.app.handle_key(ctrl('n'));
+    assert_eq!(h.app.focus, Focus::Url);
+}
+
+#[tokio::test]
+async fn the_version_tag_stays_bottom_right_whatever_the_status() {
+    let mut h = harness().await;
+    let tag = ui::VERSION;
+    for status in [None, Some("x".repeat(300))] {
+        h.app.status = status;
+        let buf = render(&h.app, 120, 30);
+        let last: String = (0..120).map(|x| buf[(x, 29)].symbol()).collect();
+        assert!(last.trim_end().ends_with(tag), "{last}");
+    }
+}
+
+static OPENED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+#[tokio::test]
+async fn clicking_contribute_opens_the_repository_left_of_the_version() {
+    let mut h = harness().await;
+    h.app = h
+        .app
+        .with_opener(|url| OPENED.lock().unwrap().push(url.to_owned()));
+    let area = ui::contribute_area(SCREEN);
+    let buf = render(&h.app, 120, 30);
+    let last: String = (0..120).map(|x| buf[(x, 29)].symbol()).collect();
+    assert!(
+        last.trim_end()
+            .ends_with(&format!("Contribute  {}", ui::VERSION)),
+        "{last}"
+    );
+    click(&mut h.app, area.x - 1, 29); // just left of the link
+    assert!(OPENED.lock().unwrap().is_empty());
+    click(&mut h.app, area.x + 2, 29);
+    assert_eq!(
+        *OPENED.lock().unwrap(),
+        ["https://github.com/LeoBorai/hozd"]
+    );
 }

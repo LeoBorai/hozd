@@ -1,6 +1,6 @@
 # hozd
 
-A terminal HTTP, gRPC and WebSocket client in the spirit of cURL and grpcurl, with a
+A terminal HTTP, gRPC, WebSocket and GraphQL client in the spirit of cURL and grpcurl, with a
 lazygit/lazydocker-style TUI. Built on [reqwest](https://docs.rs/reqwest),
 [tonic](https://docs.rs/tonic) and [ratatui](https://ratatui.rs).
 
@@ -115,6 +115,24 @@ body = "hello"
 Authorization = "Bearer token"
 ```
 
+A GraphQL template has `kind = "graphql"`, an `http://` or `https://` `url`, the `query`
+document and, optionally, `variables` as a JSON object. It is sent as a JSON `POST`:
+
+```toml
+name = "Get user"
+kind = "graphql"
+url = "https://api.example.com/graphql"
+query = '''
+query User($id: ID!) { user(id: $id) { name } }
+'''
+variables = '''
+{ "id": "7" }
+'''
+
+[headers]
+Authorization = "Bearer token"
+```
+
 Set exactly one of `reflection` and `schema`. A `.proto` file is compiled by hozd itself, no
 `protoc` needed; a descriptor set is what `protoc --include_imports --descriptor_set_out=`
 writes.
@@ -141,9 +159,10 @@ proto_include = ["~/work/protos"]
 | `Ctrl+S` / `Ctrl+Enter` / `Cmd+Enter` | Send the request (`Ctrl+Enter` needs a kitty-protocol terminal) |
 | `Ctrl+1`..`Ctrl+9` | Jump to the panel with that number (shown in its title), also from text fields; needs a kitty-protocol terminal |
 | `1`..`9`          | Same, but only outside text fields |
-| `Ctrl+N` / `Ctrl+P` | Next / previous HTTP method            |
+| `Ctrl+N`          | New request: clear the form (refused while a request runs; `Ctrl+X` first) |
+| `Ctrl+P`          | Previous HTTP method (REST); open the method / operation picker (gRPC, GraphQL) |
 | `Ctrl+T`          | Switch the request box between Body and Headers (Metadata in gRPC) |
-| `Ctrl+G`          | Cycle the request between REST, gRPC, Connect and WebSocket |
+| `Ctrl+G`          | Cycle the request between REST, gRPC, Connect, WebSocket and GraphQL |
 | Drag (reading panel) | Select text; it is copied to the clipboard on release (`y` copies the selection, or everything if none) |
 | `Ctrl+E` / click the Logs box | Open the log in the reading panel (newest last) |
 | `Enter` (response focus) | Open the response body in the reading panel |
@@ -165,7 +184,7 @@ Three more boxes appear: the schema source, the method, and the TLS state.
    (`.bin`, `.pb`, `.desc`). Import roots beyond the file's own directory go in
    `proto_include` of `config.toml`. Sending without loading loads it first. The loaded
    schema is kept for that address and source.
-3. Pick the method with `Ctrl+N` / `Ctrl+P`, `Enter` in the Method box, or a click. Type to
+3. Pick the method with `Ctrl+P`, `Enter` in the Method box, or a click. Type to
    filter. An empty body is filled with a skeleton of the input message.
 4. `Ctrl+S` sends. Unary and server streaming take a JSON object; client and bidirectional
    streaming take a JSON array, one element per message, sent in one go. Responses stream
@@ -173,6 +192,20 @@ Three more boxes appear: the schema source, the method, and the TLS state.
 
 The `Connect` tab (`Ctrl+G` cycles REST, gRPC, Connect) selects **ConnectRPC** (JSON over HTTP; unary and server streaming
 only, no client or bidirectional streaming). Schema loading is unchanged: reflection or a file.
+
+### GraphQL
+
+`Ctrl+G` (or a click on `GQL`) switches the request to GraphQL. The URL is the endpoint;
+the request box has three tabs, **Query**, **Variables** (a JSON object) and **Headers**
+(`Ctrl+T` cycles them). `Ctrl+S` sends a JSON `POST` with `query` and `variables`; the
+response is shown as received, errors included.
+
+1. `Ctrl+L` introspects the endpoint (a standard introspection query, sent with your
+   headers). The result is kept for that URL.
+2. `Ctrl+P` (or `Enter` in the Operation box) opens the picker over the queries and
+   mutations; type to filter. With an empty query, picking one fills in a document with
+   every argument as a variable and a shallow selection set, plus a variables skeleton.
+   Subscriptions are not supported.
 
 ### WebSocket
 
@@ -198,7 +231,7 @@ call, and a JSON array of all messages for server and bidirectional streaming.
 | `Ctrl+L`            | Load the schema for the current address and source    |
 | `Ctrl+O`            | Schema source: reflection / file                      |
 | `Tab` / `Down` `Up` / `Enter` (file input) | Accept / move through / accept the path suggestions |
-| `Ctrl+N` / `Ctrl+P` | Open the method picker                                |
+| `Ctrl+P`            | Open the method picker                                |
 | `Ctrl+K`            | Toggle insecure TLS                                   |
 | `Ctrl+X`            | Cancel the call in flight                             |
 | picker: `Up` `Down` `Enter` `Esc` | Move, pick, close; typing filters        |

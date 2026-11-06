@@ -9,8 +9,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use serde::{Deserialize, Serialize};
 
 use crate::client::{
-    GrpcOutcome, GrpcRequest, GrpcStatus, Header, HttpRequest, HttpResponse, Kind, Method, Outcome,
-    Protocol, Request, SchemaSource, WsClose, WsMessage, WsOutcome, WsRequest,
+    GraphqlRequest, GrpcOutcome, GrpcRequest, GrpcStatus, Header, HttpRequest, HttpResponse, Kind,
+    Method, Outcome, Protocol, Request, SchemaSource, WsClose, WsMessage, WsOutcome, WsRequest,
 };
 
 /// Bodies larger than this are truncated before being stored.
@@ -103,6 +103,8 @@ impl History {
             (Request::Http(req), Outcome::Error(msg)) => http_row(req, None, Some(msg)),
             (Request::Grpc(req), Outcome::Grpc(out)) => grpc_row(req, out),
             (Request::Ws(req), Outcome::Ws(out)) => ws_row(req, out),
+            (Request::Graphql(req), Outcome::Response(res)) => graphql_row(req, Some(res), None),
+            (Request::Graphql(req), Outcome::Error(msg)) => graphql_row(req, None, Some(msg)),
             _ => return Err(HistoryError::KindMismatch),
         };
         let now = now_ms();
@@ -182,6 +184,24 @@ impl History {
                     headers: headers(&r.request_headers)?,
                     body: r.request_body,
                 });
+                let outcome = match (r.status, r.error) {
+                    (Some(status), _) => Outcome::Response(HttpResponse {
+                        status: status as u16,
+                        headers: headers(r.response_headers.as_deref().unwrap_or("[]"))?,
+                        body: r.response_body.unwrap_or_default(),
+                        elapsed,
+                    }),
+                    (None, Some(msg)) => Outcome::Error(msg),
+                    (None, None) => return Err(corrupt("neither response nor error".into())),
+                };
+                (request, outcome)
+            }
+            Kind::Graphql => {
+                let request = Request::Graphql(GraphqlRequest::from_stored(
+                    r.url,
+                    headers(&r.request_headers)?,
+                    r.request_body.as_deref(),
+                ));
                 let outcome = match (r.status, r.error) {
                     (Some(status), _) => Outcome::Response(HttpResponse {
                         status: status as u16,
@@ -291,7 +311,7 @@ struct Row<'a> {
     method: String,
     url: &'a str,
     request_headers: String,
-    request_body: Option<&'a str>,
+    request_body: Option<String>,
     status: Option<i64>,
     response_headers: Option<String>,
     response_body: Option<String>,
@@ -310,7 +330,7 @@ fn http_row<'a>(
         method: request.method.as_str().to_owned(),
         url: &request.url,
         request_headers: serde_json::to_string(&request.headers).expect("headers serialize"),
-        request_body: request.body.as_deref().map(cap),
+        request_body: request.body.as_deref().map(|b| cap(b).to_owned()),
         status: response.map(|r| i64::from(r.status)),
         response_headers: response
             .map(|r| serde_json::to_string(&r.headers).expect("headers serialize")),
@@ -357,7 +377,7 @@ fn grpc_row<'a>(request: &'a GrpcRequest, outcome: &'a GrpcOutcome) -> Row<'a> {
         method: request.method.clone(),
         url: &request.address,
         request_headers: serde_json::to_string(&request.metadata).expect("headers serialize"),
-        request_body: request.body.as_deref().map(cap),
+        request_body: request.body.as_deref().map(|b| cap(b).to_owned()),
         status: outcome.status.as_ref().map(|s| i64::from(s.code)),
         response_headers: Some(
             serde_json::to_string(&outcome.metadata).expect("headers serialize"),
@@ -366,6 +386,29 @@ fn grpc_row<'a>(request: &'a GrpcRequest, outcome: &'a GrpcOutcome) -> Row<'a> {
         elapsed_ms: Some(outcome.elapsed.as_millis() as i64),
         error: outcome.error.as_deref(),
         grpc: Some(serde_json::to_string(&extra).expect("extra serializes")),
+    }
+}
+
+/// The stored request body is the query and variables as JSON, see
+/// [`GraphqlRequest::to_stored`]. The query is not capped: cutting it would make it unusable.
+fn graphql_row<'a>(
+    request: &'a GraphqlRequest,
+    response: Option<&'a HttpResponse>,
+    error: Option<&'a String>,
+) -> Row<'a> {
+    Row {
+        kind: Kind::Graphql,
+        method: "GRAPHQL".to_owned(),
+        url: &request.url,
+        request_headers: serde_json::to_string(&request.headers).expect("headers serialize"),
+        request_body: Some(request.to_stored()),
+        status: response.map(|r| i64::from(r.status)),
+        response_headers: response
+            .map(|r| serde_json::to_string(&r.headers).expect("headers serialize")),
+        response_body: response.map(|r| cap(&r.body).to_owned()),
+        elapsed_ms: response.map(|r| r.elapsed.as_millis() as i64),
+        error: error.map(String::as_str),
+        grpc: None,
     }
 }
 
@@ -392,7 +435,7 @@ fn ws_row<'a>(request: &'a WsRequest, outcome: &'a WsOutcome) -> Row<'a> {
         method: "WS".to_owned(),
         url: &request.url,
         request_headers: serde_json::to_string(&request.headers).expect("headers serialize"),
-        request_body: request.body.as_deref().map(cap),
+        request_body: request.body.as_deref().map(|b| cap(b).to_owned()),
         status: outcome.connected.then_some(101),
         response_headers: Some(serde_json::to_string(&outcome.headers).expect("headers serialize")),
         response_body: Some(serde_json::to_string(&extra).expect("extra serializes")),

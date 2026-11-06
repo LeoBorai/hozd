@@ -65,7 +65,7 @@ async fn reflect_pick_stream_cancel_and_replay_from_history() {
     assert_eq!(app.schema_status(), "1 service, 6 methods");
 
     // A server streaming method, from the picker; its skeleton becomes the body.
-    app.handle_key(ctrl('n'));
+    app.handle_key(ctrl('p'));
     type_text(&mut app, "listusers");
     app.handle_key(key(KeyCode::Enter));
     assert_eq!(

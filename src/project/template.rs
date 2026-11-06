@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::client::{
-    GrpcRequest, Header, HttpRequest, Method, Protocol, Request, SchemaSource, WsRequest,
+    GraphqlRequest, GrpcRequest, Header, HttpRequest, Method, Protocol, Request, SchemaSource,
+    WsRequest,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -55,6 +56,24 @@ pub enum TemplateError {
 /// authorization = "Bearer token"
 /// ```
 ///
+/// A GraphQL template has `kind = "graphql"`, the endpoint `url`, the `query` document and
+/// optionally `variables` as a JSON object. It is sent as a JSON `POST`.
+///
+/// ```text
+/// name = "Get user"
+/// kind = "graphql"
+/// url = "https://api.example.com/graphql"
+/// query = '''
+/// query User($id: ID!) { user(id: $id) { name } }
+/// '''
+/// variables = '''
+/// { "id": "7" }
+/// '''
+///
+/// [headers]
+/// Authorization = "Bearer token"
+/// ```
+///
 /// A WebSocket template has `kind = "ws"` and a `ws://` or `wss://` `url`. The optional `body`
 /// is sent as a text message once the socket opens.
 ///
@@ -78,6 +97,7 @@ pub enum TemplateKind {
     Http(HttpTemplate),
     Grpc(GrpcTemplate),
     Ws(WsTemplate),
+    Graphql(GraphqlTemplate),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +106,14 @@ pub struct HttpTemplate {
     pub url: String,
     pub headers: BTreeMap<String, String>,
     pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphqlTemplate {
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+    pub query: String,
+    pub variables: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +153,8 @@ struct Raw {
     insecure: bool,
     protocol: Option<String>,
     body: Option<String>,
+    query: Option<String>,
+    variables: Option<String>,
 }
 
 impl Template {
@@ -207,9 +237,23 @@ impl Template {
                     body: raw.body,
                 })
             }
+            "graphql" => {
+                let url = raw.url.ok_or_else(|| missing("url"))?;
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    return Err(invalid(format!(
+                        "`{url}` is not a GraphQL endpoint; it must start with `http://` or `https://`"
+                    )));
+                }
+                TemplateKind::Graphql(GraphqlTemplate {
+                    url,
+                    headers: raw.headers,
+                    query: raw.query.ok_or_else(|| missing("query"))?,
+                    variables: raw.variables,
+                })
+            }
             other => {
                 return Err(invalid(format!(
-                    "unknown template kind `{other}`; expected `http`, `grpc` or `ws`"
+                    "unknown template kind `{other}`; expected `http`, `grpc`, `ws` or `graphql`"
                 )));
             }
         };
@@ -239,6 +283,12 @@ impl Template {
                 protocol: t.protocol,
                 metadata: pairs(&t.metadata),
                 body: t.body.clone(),
+            }),
+            TemplateKind::Graphql(t) => Request::Graphql(GraphqlRequest {
+                url: t.url.clone(),
+                headers: pairs(&t.headers),
+                query: t.query.clone(),
+                variables: t.variables.clone(),
             }),
             TemplateKind::Ws(t) => Request::Ws(WsRequest {
                 url: t.url.clone(),
@@ -283,6 +333,33 @@ mod tests {
         assert_eq!(req.url, "wss://x/y");
         assert_eq!(req.body.as_deref(), Some("hi"));
         assert_eq!(req.headers, vec![Header::new("A", "1")]);
+    }
+
+    #[test]
+    fn graphql_template_parses_to_a_request() {
+        let t = Template::parse(
+            "name = \"U\"\nkind = \"graphql\"\nurl = \"http://x/g\"\nquery = \"{ a }\"\nvariables = \"{}\"\n[headers]\nA = \"1\"\n",
+        )
+        .unwrap();
+        let Request::Graphql(req) = t.to_request() else {
+            panic!("expected a GraphQL request");
+        };
+        assert_eq!(req.url, "http://x/g");
+        assert_eq!(req.query, "{ a }");
+        assert_eq!(req.variables.as_deref(), Some("{}"));
+        assert_eq!(req.headers, vec![Header::new("A", "1")]);
+    }
+
+    #[test]
+    fn graphql_template_needs_query_and_http_url() {
+        let err =
+            Template::parse("name = \"x\"\nkind = \"graphql\"\nurl = \"http://x\"\n").unwrap_err();
+        assert!(err.to_string().contains("query"), "{err}");
+        let err = Template::parse(
+            "name = \"x\"\nkind = \"graphql\"\nurl = \"ws://x\"\nquery = \"{a}\"\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("http://"), "{err}");
     }
 
     #[test]
@@ -424,9 +501,9 @@ method = "user.v1.UserService/GetUser"
 
     #[test]
     fn unknown_kind_is_an_error_naming_it() {
-        let err = Template::parse("name=\"x\"\nkind=\"graphql\"\nurl=\"u\"")
+        let err = Template::parse("name=\"x\"\nkind=\"soap\"\nurl=\"u\"")
             .unwrap_err()
             .to_string();
-        assert!(err.contains("graphql"), "{err}");
+        assert!(err.contains("soap"), "{err}");
     }
 }
