@@ -5,6 +5,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::ClientError;
+use super::graphql::GraphqlRequest;
 use super::grpc::{GrpcOutcome, GrpcRequest};
 use super::ws::{WsOutcome, WsRequest};
 
@@ -113,6 +114,8 @@ pub enum Request {
     Http(HttpRequest),
     Grpc(GrpcRequest),
     Ws(WsRequest),
+    /// Answered with [`Outcome::Response`], like an HTTP request.
+    Graphql(GraphqlRequest),
 }
 
 impl Request {
@@ -121,6 +124,7 @@ impl Request {
             Request::Http(_) => Kind::Http,
             Request::Grpc(_) => Kind::Grpc,
             Request::Ws(_) => Kind::Ws,
+            Request::Graphql(_) => Kind::Graphql,
         }
     }
 }
@@ -134,6 +138,12 @@ impl From<HttpRequest> for Request {
 impl From<WsRequest> for Request {
     fn from(r: WsRequest) -> Self {
         Request::Ws(r)
+    }
+}
+
+impl From<GraphqlRequest> for Request {
+    fn from(r: GraphqlRequest) -> Self {
+        Request::Graphql(r)
     }
 }
 
@@ -172,6 +182,7 @@ pub enum Kind {
     Http,
     Grpc,
     Ws,
+    Graphql,
 }
 
 impl Kind {
@@ -180,6 +191,7 @@ impl Kind {
             Kind::Http => "http",
             Kind::Grpc => "grpc",
             Kind::Ws => "ws",
+            Kind::Graphql => "graphql",
         }
     }
 }
@@ -192,6 +204,7 @@ impl FromStr for Kind {
             "http" => Ok(Kind::Http),
             "grpc" => Ok(Kind::Grpc),
             "ws" => Ok(Kind::Ws),
+            "graphql" => Ok(Kind::Graphql),
             other => Err(format!("unknown request kind `{other}`")),
         }
     }

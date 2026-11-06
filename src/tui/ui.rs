@@ -92,6 +92,22 @@ fn center_areas(center: Rect, kind: Kind) -> Center {
                 body,
             }
         }
+        Kind::Graphql => {
+            let [top, rpc, body] = Layout::vertical([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(3),
+            ])
+            .areas(center);
+            let [method, url] = top_row(top);
+            Center {
+                method,
+                url,
+                schema: Rect::ZERO,
+                rpc,
+                body,
+            }
+        }
         Kind::Grpc => {
             let [top, schema, rpc, body] = Layout::vertical([
                 Constraint::Length(3),
@@ -153,11 +169,11 @@ pub fn picker_list_area(picker: Rect) -> Rect {
 /// method in [`App::picker_matches`].
 pub fn picker_row_map(app: &App) -> Vec<Option<usize>> {
     let mut rows = Vec::new();
-    let mut last_service: Option<&str> = None;
+    let mut last_service: Option<String> = None;
     for (i, m) in app.picker_matches().into_iter().enumerate() {
-        if last_service != Some(m.service.as_str()) {
+        if last_service.as_deref() != Some(m.service.as_str()) {
             rows.push(None);
-            last_service = Some(&m.service);
+            last_service = Some(m.service.clone());
         }
         rows.push(Some(i));
     }
@@ -191,7 +207,7 @@ pub fn areas_for(area: Rect, kind: Kind) -> Areas {
 }
 
 /// The kind selector in the top border of the URL box, right-aligned.
-const KIND_LABEL: &str = " REST | gRPC | Connect | WS ";
+const KIND_LABEL: &str = " REST|gRPC|Connect|WS|GQL ";
 
 /// Which kind label sits under `at`: the selector is drawn in the top border of the URL
 /// box (`url` is its outer rect), right-aligned and one column short of the corner.
@@ -203,10 +219,11 @@ pub fn kind_at(url: Rect, at: Position) -> Option<(Kind, Protocol)> {
     let start = url.right().checked_sub(1 + width)?;
     let offset = at.x.checked_sub(start)?;
     match offset {
-        o if o < 7 => Some((Kind::Http, Protocol::Grpc)),
-        o if o < 14 => Some((Kind::Grpc, Protocol::Grpc)),
-        o if o < 24 => Some((Kind::Grpc, Protocol::Connect)),
-        o if o < width => Some((Kind::Ws, Protocol::Grpc)),
+        o if o < 6 => Some((Kind::Http, Protocol::Grpc)),
+        o if o < 11 => Some((Kind::Grpc, Protocol::Grpc)),
+        o if o < 19 => Some((Kind::Grpc, Protocol::Connect)),
+        o if o < 22 => Some((Kind::Ws, Protocol::Grpc)),
+        o if o < width => Some((Kind::Graphql, Protocol::Grpc)),
         _ => None,
     }
 }
@@ -244,20 +261,30 @@ pub fn stored_row_map(app: &App) -> Vec<Option<usize>> {
     rows
 }
 
-/// Titles of the request's lower box: `" Body "` and `" Headers (n) "` (`" Metadata (n) "`
-/// for gRPC), joined by `|`.
-fn request_tab_labels(count: usize, kind: Kind, panel: usize) -> (String, String) {
+/// Titles of the request's lower box, in order, each with the tab it selects: `" Body "`
+/// and `" Headers (n) "` (`" Metadata (n) "` for gRPC; `" Query "`, `" Variables "` and
+/// `" Headers (n) "` for GraphQL), joined by `|`.
+fn request_tab_labels(count: usize, kind: Kind, panel: usize) -> Vec<(RequestTab, String)> {
     let name = match kind {
-        Kind::Http => "Headers",
         Kind::Grpc => "Metadata",
-        Kind::Ws => "Headers",
+        _ => "Headers",
     };
     let second = if count == 0 {
         format!(" {name} ")
     } else {
         format!(" {name} ({count}) ")
     };
-    (format!(" [{panel}] Body "), second)
+    match kind {
+        Kind::Graphql => vec![
+            (RequestTab::Body, format!(" [{panel}] Query ")),
+            (RequestTab::Variables, " Variables ".to_owned()),
+            (RequestTab::Headers, second),
+        ],
+        _ => vec![
+            (RequestTab::Body, format!(" [{panel}] Body ")),
+            (RequestTab::Headers, second),
+        ],
+    }
 }
 
 /// Which request tab title is under `at`; titles sit on the box's top border, starting
@@ -272,15 +299,15 @@ pub fn request_tab_at(
     if at.y != body.y {
         return None;
     }
-    let offset = at.x.checked_sub(body.x + 1)? as usize;
-    let (body_label, headers_label) = request_tab_labels(header_count, kind, panel);
-    let divider = body_label.len();
-    match offset {
-        o if o < divider => Some(RequestTab::Body),
-        o if o == divider => None,
-        o if o <= divider + headers_label.len() => Some(RequestTab::Headers),
-        _ => None,
+    let mut offset = at.x.checked_sub(body.x + 1)? as usize;
+    for (tab, label) in request_tab_labels(header_count, kind, panel) {
+        if offset < label.len() {
+            return Some(tab);
+        }
+        // the `|` between two titles belongs to neither
+        offset = offset.checked_sub(label.len() + 1)?;
     }
+    None
 }
 
 /// Scroll offsets (rows, columns) that keep the cursor inside `area`.
@@ -781,6 +808,9 @@ fn stored_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) {
                 }
                 TemplateKind::Grpc(_) => Span::styled("gRPC  ", Style::new().fg(Color::Magenta)),
                 TemplateKind::Ws(_) => Span::styled("WS    ", Style::new().fg(Color::Green)),
+                TemplateKind::Graphql(_) => {
+                    Span::styled("GQL   ", Style::new().fg(Color::LightMagenta))
+                }
             },
             Span::raw(format!(" {}", t.template.name)),
         ])));
@@ -810,6 +840,18 @@ fn history_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) {
                     Span::raw(" "),
                     method,
                     Span::raw(format!(" {}", s.url)),
+                ]))
+            }
+            Kind::Graphql => {
+                let status = match s.status {
+                    Some(code) => Span::styled(code.to_string(), status_style(code)),
+                    None => Span::styled("ERR", Style::new().fg(Color::Red)),
+                };
+                ListItem::new(Line::from(vec![
+                    status,
+                    Span::raw(" "),
+                    Span::styled("GQL  ", Style::new().fg(Color::LightMagenta)),
+                    Span::raw(s.url.clone()),
                 ]))
             }
             Kind::Ws => {
@@ -891,6 +933,7 @@ fn draw_center(
 
     let grpc = request.kind == Kind::Grpc;
     let ws = request.kind == Kind::Ws;
+    let graphql = request.kind == Kind::Graphql;
     let method_block = block(
         match (grpc, ws) {
             (true, _) => "TLS",
@@ -912,6 +955,8 @@ fn draw_center(
         } else {
             Span::styled("WS", Style::new().fg(Color::Green))
         }
+    } else if graphql {
+        method_span(Method::Post)
     } else {
         method_span(request.method)
     };
@@ -921,6 +966,8 @@ fn draw_center(
     if grpc {
         draw_schema(frame, app, request, previewing, center.schema);
         draw_rpc(frame, app, request, previewing, center.rpc);
+    } else if graphql {
+        draw_operation(frame, app, request, previewing, center.rpc);
     }
     draw_request_box(frame, app, request, previewing, center.body);
 }
@@ -940,6 +987,8 @@ fn draw_address(
         (Kind::Grpc, true) => "Address (preview)",
         (Kind::Ws, false) => "URL (ws://)",
         (Kind::Ws, true) => "URL (ws://) (preview)",
+        (Kind::Graphql, false) => "Endpoint",
+        (Kind::Graphql, true) => "Endpoint (preview)",
     };
     let selected = Style::new()
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
@@ -948,7 +997,12 @@ fn draw_address(
         (Kind::Http, _) => (selected, Style::new(), Style::new()),
         (Kind::Grpc, Protocol::Grpc) => (Style::new(), selected, Style::new()),
         (Kind::Grpc, Protocol::Connect) => (Style::new(), Style::new(), selected),
-        (Kind::Ws, _) => (Style::new(), Style::new(), Style::new()),
+        (Kind::Ws | Kind::Graphql, _) => (Style::new(), Style::new(), Style::new()),
+    };
+    let graphql_style = if request.kind == Kind::Graphql {
+        selected
+    } else {
+        Style::new()
     };
     let ws_style = if request.kind == Kind::Ws {
         selected
@@ -973,12 +1027,14 @@ fn draw_address(
         Line::from(vec![
             Span::raw(" "),
             Span::styled("REST", rest_style),
-            Span::raw(" | "),
+            Span::raw("|"),
             Span::styled("gRPC", grpc_style),
-            Span::raw(" | "),
+            Span::raw("|"),
             Span::styled("Connect", connect_style),
-            Span::raw(" | "),
+            Span::raw("|"),
             Span::styled("WS", ws_style),
+            Span::raw("|"),
+            Span::styled("GQL", graphql_style),
             Span::raw(" "),
         ])
         .right_aligned(),
@@ -1126,6 +1182,45 @@ fn draw_rpc(
     frame.render_widget(Paragraph::new(line), inner);
 }
 
+/// GraphQL: the selected `Query/field`, picked from the introspected schema.
+fn draw_operation(
+    frame: &mut Frame,
+    app: &App,
+    request: &super::app::RequestView,
+    previewing: bool,
+    area: Rect,
+) {
+    let title = if previewing {
+        "Operation (preview)"
+    } else {
+        "Operation (Enter: pick, Ctrl+L: introspect)"
+    };
+    let mut block = block(
+        &numbered(app, Focus::Method, title),
+        app.focus == Focus::Method,
+    );
+    if !previewing {
+        block = block.title_top(
+            Line::styled(
+                format!(" {} ", app.schema_status()),
+                Style::new().fg(Color::DarkGray),
+            )
+            .right_aligned(),
+        );
+    }
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let line = if request.grpc.method.is_empty() {
+        Line::styled(
+            "none selected: introspect the endpoint, then pick a query or mutation",
+            Style::new().fg(Color::DarkGray),
+        )
+    } else {
+        Line::styled(request.grpc.method.clone(), Style::new().fg(Color::Yellow))
+    };
+    frame.render_widget(Paragraph::new(line), inner);
+}
+
 /// The Body / Headers (Metadata) box.
 fn draw_request_box(
     frame: &mut Frame,
@@ -1134,8 +1229,8 @@ fn draw_request_box(
     previewing: bool,
     area: Rect,
 ) {
-    let lower_focused = matches!(app.focus, Focus::Body | Focus::Headers);
-    let (body_label, headers_label) = request_tab_labels(
+    let lower_focused = matches!(app.focus, Focus::Body | Focus::Variables | Focus::Headers);
+    let labels = request_tab_labels(
         request.headers.len(),
         request.kind,
         app.panels()
@@ -1146,21 +1241,33 @@ fn draw_request_box(
     let active = Style::new()
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         .fg(Color::Yellow);
-    let (body_style, headers_style) = match app.request_tab {
-        RequestTab::Body => (active, Style::new()),
-        RequestTab::Headers => (Style::new(), active),
-    };
-    let title = Line::from(vec![
-        Span::styled(body_label, body_style),
-        Span::raw("|"),
-        Span::styled(headers_label, headers_style),
-    ]);
-    let body_block = block_titled(title, lower_focused);
+    let mut title_spans = Vec::new();
+    for (tab, label) in labels {
+        if !title_spans.is_empty() {
+            title_spans.push(Span::raw("|"));
+        }
+        let style = if tab == app.request_tab {
+            active
+        } else {
+            Style::new()
+        };
+        title_spans.push(Span::styled(label, style));
+    }
+    let body_block = block_titled(Line::from(title_spans), lower_focused);
     let body_inner = body_block.inner(area);
     frame.render_widget(body_block, area);
+    let graphql = request.kind == Kind::Graphql;
     match (app.request_tab, previewing) {
+        (RequestTab::Body, true) if graphql => {
+            let lines: Vec<Line> = request.body.lines().map(Line::raw).collect();
+            frame.render_widget(Paragraph::new(lines), body_inner);
+        }
         (RequestTab::Body, true) => {
             let lines: Vec<Line> = request.body.lines().map(highlight_line).collect();
+            frame.render_widget(Paragraph::new(lines), body_inner);
+        }
+        (RequestTab::Variables, true) => {
+            let lines: Vec<Line> = request.variables.lines().map(highlight_line).collect();
             frame.render_widget(Paragraph::new(lines), body_inner);
         }
         (RequestTab::Headers, true) => {
@@ -1175,6 +1282,13 @@ fn draw_request_box(
             &app.body,
             body_inner,
             app.focus == Focus::Body,
+            if graphql { Syntax::Plain } else { Syntax::Json },
+        ),
+        (RequestTab::Variables, false) => render_editor(
+            frame,
+            &app.variables,
+            body_inner,
+            app.focus == Focus::Variables,
             Syntax::Json,
         ),
         (RequestTab::Headers, false) => draw_header_rows(frame, app, body_inner),
@@ -1508,10 +1622,12 @@ fn ws_body_lines(w: &crate::client::WsOutcome) -> Vec<Line<'static>> {
 // ---- status bar ------------------------------------------------------------
 
 /// Both fit a 120-column terminal; the README has the full key tables.
-pub const HELP_REST: &str = "Tab focus | Ctrl+G gRPC | [ ] tabs | j/k move | Enter load | Ctrl+S send | Ctrl+N/P method | ? keys | q quit";
-pub const HELP_GRPC: &str = "Ctrl+G REST/gRPC | Ctrl+L schema | Ctrl+N method | Ctrl+S send | Ctrl+X cancel | Ctrl+O source | Ctrl+K TLS | ? keys";
+pub const HELP_REST: &str = "Tab focus | Ctrl+G kind | j/k move | Enter load | Ctrl+S send | Ctrl+N new | Ctrl+P method | ? keys";
+pub const HELP_GRPC: &str = "Ctrl+G kind | Ctrl+L schema | Ctrl+P method | Ctrl+N new | Ctrl+S send | Ctrl+X cancel | ? keys";
 
-pub const HELP_WS: &str = "Ctrl+G REST/gRPC/WS | Ctrl+S connect, then send body | Ctrl+X close | Ctrl+T headers | Tab focus | ? keys";
+pub const HELP_GRAPHQL: &str = "Ctrl+G kind | Ctrl+L introspect | Ctrl+P operation | Ctrl+N new | Ctrl+S send | Ctrl+T tabs | ? keys";
+
+pub const HELP_WS: &str = "Ctrl+G kind | Ctrl+S connect, then send body | Ctrl+X close | Ctrl+N new | Ctrl+T headers | ? keys";
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let text = match &app.status {
@@ -1525,9 +1641,65 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 Kind::Http => HELP_REST,
                 Kind::Grpc => HELP_GRPC,
                 Kind::Ws => HELP_WS,
+                Kind::Graphql => HELP_GRAPHQL,
             },
             Style::new().fg(Color::DarkGray),
         ),
     };
-    frame.render_widget(Paragraph::new(text), area);
+    // The link and the version tag stay in the bottom right corner whatever the message says.
+    let (link, tag) = status_tags(area);
+    let left = Rect::new(area.x, area.y, link.x.saturating_sub(area.x), area.height);
+    frame.render_widget(Paragraph::new(text), left);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                CONTRIBUTE.trim(),
+                Style::new()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+            Span::raw(" "),
+        ])),
+        link,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            format!(" {VERSION} "),
+            Style::new().fg(Color::Yellow),
+        )),
+        tag,
+    );
 }
+
+/// The link to the source, clickable in the status bar.
+pub const REPO_URL: &str = "https://github.com/LeoBorai/hozd";
+const CONTRIBUTE: &str = " Contribute ";
+
+/// The status bar line of a screen.
+fn status_area(screen: Rect) -> Rect {
+    main_area(screen).1
+}
+
+/// The rects of the "Contribute" link and the version tag in the status bar.
+fn status_tags(status: Rect) -> (Rect, Rect) {
+    let tag_w = (VERSION.len() as u16 + 2).min(status.width);
+    let link_w = (CONTRIBUTE.len() as u16).min(status.width - tag_w);
+    let tag = Rect::new(status.right() - tag_w, status.y, tag_w, status.height);
+    let link = Rect::new(tag.x - link_w, status.y, link_w, status.height);
+    (link, tag)
+}
+
+/// Where the "Contribute" link sits on `screen`.
+pub fn contribute_area(screen: Rect) -> Rect {
+    status_tags(status_area(screen)).0
+}
+
+/// Columns the status bar leaves for its message.
+pub fn status_text_width(screen_width: u16) -> usize {
+    let (link, _) = status_tags(status_area(Rect::new(0, 0, screen_width, 2)));
+    link.x as usize
+}
+
+/// The release tag shown in the status bar, e.g. `v0.1.4`.
+pub const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));

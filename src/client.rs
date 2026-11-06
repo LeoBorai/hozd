@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 pub use fake::FakeClient;
+pub use graphql::{GraphqlRequest, GraphqlSchema, introspection_request};
 pub use grpc::{
     CallEvent, CallHandle, CallKind, FakeGrpc, FakeStep, GrpcClient, GrpcError, GrpcOutcome,
     GrpcRequest, GrpcStatus, MethodInfo, Protocol, Schema, SchemaSource, SharedGrpc, TonicGrpc,
@@ -19,6 +20,7 @@ pub use ws::{
 pub mod grpc;
 
 mod fake;
+mod graphql;
 mod http;
 mod trace;
 mod types;
@@ -49,3 +51,16 @@ pub trait HttpClient: Send + Sync {
 }
 
 pub type SharedHttp = Arc<dyn HttpClient>;
+
+/// Asks the GraphQL endpoint at `url` for its schema by introspection.
+pub async fn introspect(
+    client: &SharedHttp,
+    url: &str,
+    headers: &[Header],
+) -> Result<GraphqlSchema, String> {
+    let response = client
+        .send(&introspection_request(url, headers))
+        .await
+        .map_err(|e| e.to_string())?;
+    GraphqlSchema::from_response(&response)
+}

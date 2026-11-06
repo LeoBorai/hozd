@@ -11,9 +11,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::{
-    CallEvent, CallKind, GrpcOutcome, GrpcRequest, GrpcStatus, Header, HttpRequest, Kind, Method,
-    Protocol, Request, Schema, SchemaSource, SharedGrpc, SharedHttp, SharedWs, Trace,
-    TungsteniteWs, WsEvent, WsOutcome, WsRequest,
+    CallEvent, CallKind, GraphqlRequest, GraphqlSchema, GrpcOutcome, GrpcRequest, GrpcStatus,
+    Header, HttpRequest, Kind, Method, Protocol, Request, Schema, SchemaSource, SharedGrpc,
+    SharedHttp, SharedWs, Trace, TungsteniteWs, WsEvent, WsOutcome, WsRequest, introspect,
 };
 use crate::history::{History, HistoryEntry, Outcome, Summary};
 use crate::project::{Loaded, Template};
@@ -43,6 +43,8 @@ pub enum Focus {
     List,
     Url,
     Body,
+    /// GraphQL editor: the variables JSON.
+    Variables,
     Headers,
     /// gRPC editor: the schema source box.
     Schema,
@@ -56,6 +58,8 @@ pub enum Focus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestTab {
     Body,
+    /// GraphQL only.
+    Variables,
     Headers,
 }
 
@@ -65,6 +69,14 @@ pub struct SchemaKey {
     pub address: String,
     pub source: SchemaSource,
     pub insecure: bool,
+}
+
+/// The schema introspected from a GraphQL endpoint.
+#[derive(Debug, Clone)]
+pub struct LoadedGraphql {
+    /// The endpoint it came from.
+    pub url: String,
+    pub schema: GraphqlSchema,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +110,8 @@ pub enum Msg {
     WsEvent(WsEvent),
     /// The result of a schema load started for `SchemaKey`.
     SchemaLoaded(SchemaKey, Result<Schema, String>),
+    /// The result of introspecting the GraphQL endpoint at the URL.
+    GraphqlLoaded(String, Result<GraphqlSchema, String>),
     History(Vec<Summary>),
     Preview(Box<HistoryEntry>),
     /// A line of the connection trace of the request in flight.
@@ -123,6 +137,8 @@ pub struct RequestView {
     /// The headers, or the metadata for gRPC.
     pub headers: Vec<Header>,
     pub body: String,
+    /// The GraphQL variables; empty for other kinds.
+    pub variables: String,
     pub grpc: GrpcView,
 }
 
@@ -144,6 +160,7 @@ impl From<&HttpRequest> for RequestView {
             url: r.url.clone(),
             headers: r.headers.clone(),
             body: r.body.clone().unwrap_or_default(),
+            variables: String::new(),
             grpc: GrpcView::default(),
         }
     }
@@ -159,6 +176,7 @@ impl From<&Request> for RequestView {
                 url: r.address.clone(),
                 headers: r.metadata.clone(),
                 body: r.body.clone().unwrap_or_default(),
+                variables: String::new(),
                 grpc: GrpcView {
                     method: r.method.clone(),
                     schema: r.schema.clone(),
@@ -166,12 +184,22 @@ impl From<&Request> for RequestView {
                     protocol: r.protocol,
                 },
             },
+            Request::Graphql(r) => Self {
+                kind: Kind::Graphql,
+                method: Method::Post,
+                url: r.url.clone(),
+                headers: r.headers.clone(),
+                body: r.query.clone(),
+                variables: r.variables.clone().unwrap_or_default(),
+                grpc: GrpcView::default(),
+            },
             Request::Ws(r) => Self {
                 kind: Kind::Ws,
                 method: Method::default(),
                 url: r.url.clone(),
                 headers: r.headers.clone(),
                 body: r.body.clone().unwrap_or_default(),
+                variables: String::new(),
                 grpc: GrpcView::default(),
             },
         }
@@ -209,6 +237,10 @@ pub struct App {
     /// One `Name: value` per line, see [`headers`].
     pub headers: HeaderEditor,
     pub request_tab: RequestTab,
+    /// GraphQL editor: the variables, a JSON object.
+    pub variables: TextArea<'static>,
+    /// GraphQL editor: the schema introspected from the endpoint, if any.
+    pub graphql: Option<LoadedGraphql>,
     /// gRPC editor: whether the schema comes from reflection or from `schema_path`.
     pub schema_mode: SchemaMode,
     /// gRPC editor: the `.proto` or descriptor set file used when `schema_mode` is `File`.
@@ -260,6 +292,8 @@ pub struct App {
     ws: SharedWs,
     /// Sends messages into the open WebSocket session; `None` when there is none.
     ws_out: Option<UnboundedSender<String>>,
+    /// Opens a URL in the browser; replaced in tests.
+    opener: fn(&str),
     store: History,
     tx: UnboundedSender<Msg>,
 }
@@ -305,6 +339,8 @@ impl App {
             body: TextArea::default(),
             headers: HeaderEditor::default(),
             request_tab: RequestTab::Body,
+            variables: TextArea::default(),
+            graphql: None,
             schema_mode: SchemaMode::Reflection,
             schema_path: single_line(""),
             suggestions: Suggestions::default(),
@@ -335,6 +371,7 @@ impl App {
             grpc,
             ws: Arc::new(TungsteniteWs::new()),
             ws_out: None,
+            opener: open_in_browser,
             store,
             tx,
         };
@@ -345,6 +382,12 @@ impl App {
         app.log.push(Level::Info, "ready");
         app.refresh_history();
         app
+    }
+
+    /// Replaces what opens links in the browser, for tests.
+    pub fn with_opener(mut self, opener: fn(&str)) -> Self {
+        self.opener = opener;
+        self
     }
 
     /// Replaces the WebSocket client, for tests.
@@ -407,6 +450,12 @@ impl App {
         if self.schema_loading {
             return "loading...".into();
         }
+        if self.kind == Kind::Graphql {
+            return match self.current_graphql() {
+                Some(schema) => format!("{} operations", schema.operations().len()),
+                None => "not introspected".into(),
+            };
+        }
         match &self.schema {
             Some(loaded) if loaded.key == self.schema_key() => counts(&loaded.schema),
             _ => "not loaded".into(),
@@ -452,6 +501,31 @@ impl App {
         }
     }
 
+    /// The GraphQL request as edited; header lines that are not `Name: value` are skipped.
+    pub fn editor_graphql_request(&self) -> GraphqlRequest {
+        self.build_graphql_request(self.headers.parse_lenient())
+    }
+
+    /// Like [`editor_graphql_request`](Self::editor_graphql_request) but fails on an invalid
+    /// header line.
+    pub fn try_graphql_request(&self) -> Result<GraphqlRequest, String> {
+        Ok(self.build_graphql_request(self.headers.parse()?))
+    }
+
+    fn build_graphql_request(&self, headers: Vec<Header>) -> GraphqlRequest {
+        let variables = self.variables_text();
+        GraphqlRequest {
+            url: self.url_text().trim().to_owned(),
+            headers,
+            query: self.body_text(),
+            variables: (!variables.trim().is_empty()).then_some(variables),
+        }
+    }
+
+    pub fn variables_text(&self) -> String {
+        self.variables.lines().join("\n")
+    }
+
     /// The gRPC request as edited; metadata lines that are not `Name: value` are skipped.
     pub fn editor_grpc_request(&self) -> GrpcRequest {
         self.build_grpc_request(self.headers.parse_lenient())
@@ -481,6 +555,7 @@ impl App {
             Kind::Http => (&self.editor_request()).into(),
             Kind::Grpc => (&Request::Grpc(self.editor_grpc_request())).into(),
             Kind::Ws => (&Request::Ws(self.editor_ws_request())).into(),
+            Kind::Graphql => (&Request::Graphql(self.editor_graphql_request())).into(),
         }
     }
 
@@ -488,6 +563,7 @@ impl App {
     pub fn editor_focus(&self) -> Focus {
         match self.request_tab {
             RequestTab::Body => Focus::Body,
+            RequestTab::Variables => Focus::Variables,
             RequestTab::Headers => Focus::Headers,
         }
     }
@@ -495,8 +571,10 @@ impl App {
     /// Panels in display order; panel `n` of the UI is entry `n - 1`.
     pub fn panels(&self) -> Vec<Focus> {
         let mut panels = vec![Focus::List, Focus::Url];
-        if self.kind == Kind::Grpc {
-            panels.extend([Focus::Schema, Focus::Method]);
+        match self.kind {
+            Kind::Grpc => panels.extend([Focus::Schema, Focus::Method]),
+            Kind::Graphql => panels.push(Focus::Method),
+            _ => {}
         }
         panels.extend([self.editor_focus(), Focus::Response]);
         panels
@@ -504,7 +582,7 @@ impl App {
 
     pub fn set_request_tab(&mut self, tab: RequestTab) {
         self.request_tab = tab;
-        if matches!(self.focus, Focus::Body | Focus::Headers) {
+        if matches!(self.focus, Focus::Body | Focus::Variables | Focus::Headers) {
             self.focus = self.editor_focus();
         }
     }
@@ -586,6 +664,26 @@ impl App {
                     }
                     Err(message) => {
                         self.log.push(Level::Error, format!("schema: {message}"));
+                        self.status = Some(message);
+                    }
+                }
+            }
+            Msg::GraphqlLoaded(url, result) => {
+                self.schema_loading = false;
+                match result {
+                    Ok(schema) => {
+                        let loaded = format!(
+                            "introspected {} operations, {} types",
+                            schema.operations().len(),
+                            schema.type_count()
+                        );
+                        self.log.push(Level::Info, loaded.clone());
+                        self.notice = Some(loaded);
+                        self.graphql = Some(LoadedGraphql { url, schema });
+                    }
+                    Err(message) => {
+                        self.log
+                            .push(Level::Error, format!("introspection: {message}"));
                         self.status = Some(message);
                     }
                 }
@@ -673,7 +771,7 @@ impl App {
         // `?` types a character in text fields, so F1 opens the menu from anywhere.
         let typing = matches!(
             self.focus,
-            Focus::Url | Focus::Body | Focus::Headers | Focus::Schema
+            Focus::Url | Focus::Body | Focus::Variables | Focus::Headers | Focus::Schema
         );
         if key.code == KeyCode::F(1) || (key.code == KeyCode::Char('?') && !typing && !ctrl) {
             return self.help = Some(0);
@@ -706,13 +804,16 @@ impl App {
         let action = match (key.code, ctrl) {
             (KeyCode::Char('c'), true) => Some(Action::Quit),
             (KeyCode::Char('s'), true) => Some(Action::Send),
-            (KeyCode::Char('n'), true) if self.kind == Kind::Grpc => Some(Action::PickMethod),
-            (KeyCode::Char('p'), true) if self.kind == Kind::Grpc => Some(Action::PickMethod),
-            (KeyCode::Char('n'), true) if self.kind == Kind::Http => Some(Action::NextMethod),
+            (KeyCode::Char('n'), true) => Some(Action::NewRequest),
+            (KeyCode::Char('p'), true) if matches!(self.kind, Kind::Grpc | Kind::Graphql) => {
+                Some(Action::PickMethod)
+            }
             (KeyCode::Char('p'), true) if self.kind == Kind::Http => Some(Action::PrevMethod),
             (KeyCode::Char('t'), true) => Some(Action::ToggleRequestTab),
             (KeyCode::Char('g'), true) => Some(Action::ToggleKind),
-            (KeyCode::Char('l'), true) if self.kind == Kind::Grpc => Some(Action::LoadSchema),
+            (KeyCode::Char('l'), true) if matches!(self.kind, Kind::Grpc | Kind::Graphql) => {
+                Some(Action::LoadSchema)
+            }
             (KeyCode::Char('x'), true) => Some(Action::Cancel),
             (KeyCode::Char('e'), true) => Some(Action::OpenLog),
             (KeyCode::Char('o'), true) if self.kind == Kind::Grpc => {
@@ -744,6 +845,9 @@ impl App {
             Focus::Body => {
                 self.body.input(Input::from(key));
             }
+            Focus::Variables => {
+                self.variables.input(Input::from(key));
+            }
             Focus::Headers => {
                 self.headers.key(key);
             }
@@ -758,6 +862,7 @@ impl App {
             Action::Quit => self.should_quit = true,
             Action::Send => self.send(),
             Action::PickMethod => self.open_picker(),
+            Action::NewRequest => self.new_request(),
             Action::NextMethod => self.method = self.method.next(),
             Action::PrevMethod => self.method = self.method.prev(),
             Action::ToggleRequestTab => self.toggle_request_tab(),
@@ -891,6 +996,9 @@ impl App {
     /// Loads the schema for the current address and source in the background; the result
     /// replaces the loaded schema, and a failure leaves it as it was.
     pub fn load_schema(&mut self) {
+        if self.kind == Kind::Graphql {
+            return self.introspect();
+        }
         if self.kind != Kind::Grpc || self.schema_loading {
             return;
         }
@@ -909,6 +1017,35 @@ impl App {
                 .await
                 .map_err(|e| e.to_string());
             let _ = tx.send(Msg::SchemaLoaded(key, result));
+        });
+    }
+
+    /// GraphQL: asks the endpoint for its schema in the background.
+    fn introspect(&mut self) {
+        if self.schema_loading {
+            return;
+        }
+        let request = match self.try_graphql_request() {
+            Ok(request) => request,
+            Err(message) => {
+                self.status = Some(message);
+                self.request_tab = RequestTab::Headers;
+                self.set_focus(Focus::Headers);
+                return;
+            }
+        };
+        if request.url.is_empty() {
+            self.status = Some("enter the endpoint URL first".into());
+            return;
+        }
+        self.status = None;
+        self.log
+            .push(Level::Info, format!("introspecting {}", request.url));
+        self.schema_loading = true;
+        let (client, tx) = (self.client.clone(), self.tx.clone());
+        tokio::spawn(async move {
+            let result = introspect(&client, &request.url, &request.headers).await;
+            let _ = tx.send(Msg::GraphqlLoaded(request.url, result));
         });
     }
 
@@ -931,14 +1068,25 @@ impl App {
         (loaded.key == self.schema_key()).then_some(&loaded.schema)
     }
 
+    /// The introspected GraphQL schema, if it came from the endpoint the editor has now.
+    pub fn current_graphql(&self) -> Option<&GraphqlSchema> {
+        let loaded = self.graphql.as_ref()?;
+        (loaded.url == self.url_text().trim()).then_some(&loaded.schema)
+    }
+
     /// Opens the method picker over the loaded schema.
     pub fn open_picker(&mut self) {
-        if self.kind != Kind::Grpc {
-            return;
-        }
-        if self.current_schema().is_none() {
-            self.status = Some("load the schema first (Ctrl+L)".into());
-            return;
+        match self.kind {
+            Kind::Grpc if self.current_schema().is_none() => {
+                self.status = Some("load the schema first (Ctrl+L)".into());
+                return;
+            }
+            Kind::Graphql if self.current_graphql().is_none() => {
+                self.status = Some("introspect the endpoint first (Ctrl+L)".into());
+                return;
+            }
+            Kind::Grpc | Kind::Graphql => {}
+            _ => return,
         }
         self.status = None;
         self.picker = Some(Picker::default());
@@ -946,15 +1094,21 @@ impl App {
 
     /// The methods the picker lists: those whose `service/method` contains the filter,
     /// ignoring case, in schema order (grouped by service).
-    pub fn picker_matches(&self) -> Vec<&crate::client::MethodInfo> {
-        let (Some(picker), Some(schema)) = (&self.picker, self.current_schema()) else {
+    pub fn picker_matches(&self) -> Vec<crate::client::MethodInfo> {
+        let Some(picker) = &self.picker else {
             return Vec::new();
         };
+        let methods = if self.kind == Kind::Graphql {
+            self.current_graphql().map(GraphqlSchema::operations)
+        } else {
+            self.current_schema().map(Schema::methods)
+        };
         let filter = picker.filter.to_lowercase();
-        schema
-            .methods()
+        methods
+            .unwrap_or_default()
             .iter()
             .filter(|m| m.full_name().to_lowercase().contains(&filter))
+            .cloned()
             .collect()
     }
 
@@ -1011,7 +1165,23 @@ impl App {
             return;
         };
         self.picker = None;
-        if self.body_text().trim().is_empty()
+        if self.kind == Kind::Graphql {
+            // Both editors are filled in only when the query is still empty.
+            if self.body_text().trim().is_empty()
+                && let Some((query, variables)) = self
+                    .current_graphql()
+                    .and_then(|schema| schema.skeleton(&full_name))
+            {
+                self.body = TextArea::new(query.lines().map(str::to_owned).collect());
+                self.variables = TextArea::new(
+                    variables
+                        .unwrap_or_default()
+                        .lines()
+                        .map(str::to_owned)
+                        .collect(),
+                );
+            }
+        } else if self.body_text().trim().is_empty()
             && let Some(skeleton) = self
                 .current_schema()
                 .and_then(|schema| schema.skeleton(&full_name))
@@ -1093,14 +1263,15 @@ impl App {
         }
     }
 
-    /// Cycles the editor through REST, gRPC, Connect and WebSocket. The address/URL, body and
+    /// Cycles the editor through REST, gRPC, Connect, WebSocket and GraphQL. The address/URL, body and
     /// headers/metadata texts are kept.
     pub fn toggle_kind(&mut self) {
         let (kind, protocol) = match (self.kind, self.protocol) {
             (Kind::Http, _) => (Kind::Grpc, Protocol::Grpc),
             (Kind::Grpc, Protocol::Grpc) => (Kind::Grpc, Protocol::Connect),
             (Kind::Grpc, Protocol::Connect) => (Kind::Ws, Protocol::Grpc),
-            (Kind::Ws, _) => (Kind::Http, Protocol::Grpc),
+            (Kind::Ws, _) => (Kind::Graphql, Protocol::Grpc),
+            (Kind::Graphql, _) => (Kind::Http, Protocol::Grpc),
         };
         self.protocol = protocol;
         self.set_kind(kind);
@@ -1112,8 +1283,15 @@ impl App {
         }
         self.kind = kind;
         // The editors that only exist in one mode cannot keep the focus.
-        if kind == Kind::Http && matches!(self.focus, Focus::Schema | Focus::Method) {
+        let has_method = matches!(kind, Kind::Grpc | Kind::Graphql);
+        if !has_method && matches!(self.focus, Focus::Schema | Focus::Method) {
             self.focus = Focus::Url;
+        }
+        if kind == Kind::Graphql && self.focus == Focus::Schema {
+            self.focus = Focus::Method;
+        }
+        if kind != Kind::Graphql && self.request_tab == RequestTab::Variables {
+            self.set_request_tab(RequestTab::Body);
         }
     }
 
@@ -1129,9 +1307,11 @@ impl App {
     }
 
     fn toggle_request_tab(&mut self) {
-        self.set_request_tab(match self.request_tab {
-            RequestTab::Body => RequestTab::Headers,
-            RequestTab::Headers => RequestTab::Body,
+        self.set_request_tab(match (self.request_tab, self.kind) {
+            (RequestTab::Body, Kind::Graphql) => RequestTab::Variables,
+            (RequestTab::Body, _) => RequestTab::Headers,
+            (RequestTab::Variables, _) => RequestTab::Headers,
+            (RequestTab::Headers, _) => RequestTab::Body,
         });
     }
 
@@ -1200,6 +1380,13 @@ impl App {
                 let offset = ui::list_offset(self.suggestions.sel, ui::inner(popup).height);
                 return self.accept_suggestion(row + offset);
             }
+        }
+        if event.kind == MouseEventKind::Down(MouseButton::Left)
+            && ui::contribute_area(screen).contains(at)
+        {
+            (self.opener)(ui::REPO_URL);
+            self.notice = Some(format!("opening {}", ui::REPO_URL));
+            return;
         }
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => self.click(at, &areas),
@@ -1308,7 +1495,7 @@ impl App {
             match self.kind {
                 Kind::Http => self.method = self.method.next(),
                 Kind::Grpc => self.insecure = !self.insecure,
-                Kind::Ws => {}
+                Kind::Ws | Kind::Graphql => {}
             }
         } else if areas.schema.contains(at) {
             self.focus_editor(Focus::Schema);
@@ -1367,6 +1554,14 @@ impl App {
                 RequestTab::Body => {
                     let (row_scroll, col_scroll) = ui::editor_scroll(cursor_of(&self.body), inner);
                     self.body.move_cursor(CursorMove::Jump(
+                        (at.y - inner.y) + row_scroll as u16,
+                        (at.x - inner.x) + col_scroll as u16,
+                    ));
+                }
+                RequestTab::Variables => {
+                    let (row_scroll, col_scroll) =
+                        ui::editor_scroll(cursor_of(&self.variables), inner);
+                    self.variables.move_cursor(CursorMove::Jump(
                         (at.y - inner.y) + row_scroll as u16,
                         (at.x - inner.x) + col_scroll as u16,
                     ));
@@ -1449,6 +1644,32 @@ impl App {
 
     /// Moves focus into the editor. If the panels were previewing a hovered entry, that
     /// entry is loaded first, so clicking into a preview edits what you were looking at.
+    /// Clears the editor for a fresh request of the current kind and focuses the URL.
+    /// Refused while a request or WebSocket session is running.
+    pub fn new_request(&mut self) {
+        if self.sending || self.ws_open() {
+            self.status = Some("a request is running; Ctrl+X cancels it first".into());
+            return;
+        }
+        self.method = Method::Get;
+        self.url = single_line("");
+        self.body = TextArea::default();
+        self.variables = TextArea::default();
+        self.headers = HeaderEditor::default();
+        self.schema_path = single_line("");
+        self.schema_mode = SchemaMode::Reflection;
+        self.suggestions = Suggestions::default();
+        self.suggested_for = None;
+        self.insecure = false;
+        self.selected_method = None;
+        self.picker = None;
+        self.request_tab = RequestTab::Body;
+        self.live = None;
+        self.status = None;
+        self.notice = Some("new request".into());
+        self.set_focus(Focus::Url);
+    }
+
     fn focus_editor(&mut self, focus: Focus) {
         if matches!(self.focus, Focus::List | Focus::Response) && self.view().previewing {
             self.activate();
@@ -1506,6 +1727,7 @@ impl App {
             Request::Http(request) => request,
             Request::Grpc(request) => return self.load_grpc_request(request),
             Request::Ws(request) => return self.load_ws_request(request),
+            Request::Graphql(request) => return self.load_graphql_request(request),
         };
         self.set_kind(Kind::Http);
         self.method = request.method;
@@ -1516,6 +1738,23 @@ impl App {
             .map(|b| TextArea::new(b.lines().map(str::to_owned).collect()))
             .unwrap_or_default();
         self.headers = HeaderEditor::from_headers(&request.headers);
+    }
+
+    fn load_graphql_request(&mut self, request: &GraphqlRequest) {
+        self.set_kind(Kind::Graphql);
+        self.url = single_line(&request.url);
+        self.body = TextArea::new(request.query.lines().map(str::to_owned).collect());
+        self.variables = TextArea::new(
+            request
+                .variables
+                .as_deref()
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect(),
+        );
+        self.headers = HeaderEditor::from_headers(&request.headers);
+        self.selected_method = None;
     }
 
     fn load_ws_request(&mut self, request: &WsRequest) {
@@ -1561,6 +1800,7 @@ impl App {
             Kind::Http => self.send_http(),
             Kind::Grpc => self.send_grpc(),
             Kind::Ws => self.send_ws(),
+            Kind::Graphql => self.send_graphql(),
         }
     }
 
@@ -1687,6 +1927,55 @@ impl App {
         });
     }
 
+    fn send_graphql(&mut self) {
+        let request = match self.try_graphql_request() {
+            Ok(request) => request,
+            Err(message) => {
+                self.status = Some(message);
+                self.request_tab = RequestTab::Headers;
+                self.set_focus(Focus::Headers);
+                return;
+            }
+        };
+        if request.url.is_empty() {
+            self.status = Some("enter the endpoint URL first".into());
+            return;
+        }
+        if request.query.trim().is_empty() {
+            self.status = Some("write a query first".into());
+            return;
+        }
+        let http = match request.to_http() {
+            Ok(http) => http,
+            Err(message) => {
+                self.status = Some(message);
+                self.request_tab = RequestTab::Variables;
+                self.set_focus(Focus::Variables);
+                return;
+            }
+        };
+        self.sending = true;
+        self.status = None;
+        self.log
+            .push(Level::Info, format!("-> GraphQL {}", request.url));
+
+        let (client, store, tx) = (self.client.clone(), self.store.clone(), self.tx.clone());
+        tokio::spawn(async move {
+            let trace = Trace::new({
+                let tx = tx.clone();
+                move |line| {
+                    let _ = tx.send(Msg::Trace(line));
+                }
+            });
+            let outcome: Outcome = client.send_traced(&http, &trace).await.into();
+            if let Err(e) = store.record(&Request::Graphql(request), &outcome).await {
+                let _ = tx.send(Msg::Failed(format!("could not save history: {e}")));
+            }
+            let _ = tx.send(Msg::Sent(outcome));
+            record_done(&store, &tx).await;
+        });
+    }
+
     fn send_grpc(&mut self) {
         let request = match self.try_grpc_request() {
             Ok(request) => request,
@@ -1702,7 +1991,7 @@ impl App {
             return;
         }
         if request.method.is_empty() {
-            self.status = Some("pick a method first (Ctrl+N)".into());
+            self.status = Some("pick a method first (Ctrl+P)".into());
             return;
         }
         if let Err(message) = self.schema_ready_to_load() {
@@ -1840,9 +2129,10 @@ fn next_focus(f: Focus, editor: Focus, kind: Kind) -> Focus {
         (Focus::List, _) => Focus::Url,
         (Focus::Url, Kind::Http | Kind::Ws) => editor,
         (Focus::Url, Kind::Grpc) => Focus::Schema,
+        (Focus::Url, Kind::Graphql) => Focus::Method,
         (Focus::Schema, _) => Focus::Method,
         (Focus::Method, _) => editor,
-        (Focus::Body | Focus::Headers, _) => Focus::Response,
+        (Focus::Body | Focus::Variables | Focus::Headers, _) => Focus::Response,
         (Focus::Response, _) => Focus::List,
     }
 }
@@ -1852,9 +2142,12 @@ fn prev_focus(f: Focus, editor: Focus, kind: Kind) -> Focus {
         (Focus::List, _) => Focus::Response,
         (Focus::Url, _) => Focus::List,
         (Focus::Schema, _) => Focus::Url,
+        (Focus::Method, Kind::Graphql) => Focus::Url,
         (Focus::Method, _) => Focus::Schema,
-        (Focus::Body | Focus::Headers, Kind::Http | Kind::Ws) => Focus::Url,
-        (Focus::Body | Focus::Headers, Kind::Grpc) => Focus::Method,
+        (Focus::Body | Focus::Variables | Focus::Headers, Kind::Http | Kind::Ws) => Focus::Url,
+        (Focus::Body | Focus::Variables | Focus::Headers, Kind::Grpc | Kind::Graphql) => {
+            Focus::Method
+        }
         (Focus::Response, _) => editor,
     }
 }
@@ -1939,4 +2232,27 @@ async fn record_done(store: &History, tx: &UnboundedSender<Msg>) {
             let _ = tx.send(Msg::Failed(format!("could not read history: {e}")));
         }
     }
+}
+
+/// Opens `url` with the system's browser; failures are ignored (there may be no browser).
+fn open_in_browser(url: &str) {
+    use std::process::{Command, Stdio};
+
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut c = Command::new("cmd");
+        c.args(["/C", "start", ""]);
+        c
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = Command::new("xdg-open");
+
+    let _ = command
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }

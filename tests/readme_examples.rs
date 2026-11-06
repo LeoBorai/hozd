@@ -25,7 +25,7 @@ fn toml_blocks() -> Vec<String> {
 #[test]
 fn every_documented_toml_example_loads() {
     let blocks = toml_blocks();
-    let (mut http, mut grpc, mut ws, mut settings) = (0, 0, 0, 0);
+    let (mut http, mut grpc, mut ws, mut graphql, mut settings) = (0, 0, 0, 0, 0);
     for block in &blocks {
         if block.contains("proto_include") {
             let dir = tempfile::tempdir().unwrap();
@@ -40,12 +40,13 @@ fn every_documented_toml_example_loads() {
                 TemplateKind::Http(_) => http += 1,
                 TemplateKind::Grpc(_) => grpc += 1,
                 TemplateKind::Ws(_) => ws += 1,
+                TemplateKind::Graphql(_) => graphql += 1,
             }
         }
     }
     assert_eq!(
-        (http, grpc, ws, settings),
-        (1, 1, 1, 1),
+        (http, grpc, ws, graphql, settings),
+        (1, 1, 1, 1, 1),
         "{} blocks",
         blocks.len()
     );

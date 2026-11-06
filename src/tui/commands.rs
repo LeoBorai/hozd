@@ -10,6 +10,7 @@ pub enum Action {
     Cancel,
     ToggleKind,
     ToggleRequestTab,
+    NewRequest,
     NextMethod,
     PrevMethod,
     PickMethod,
@@ -45,6 +46,12 @@ const fn cmd(
 }
 
 pub const COMMANDS: &[Command] = &[
+    cmd(
+        "<ctrl+n>",
+        "New request: clear the form",
+        Action::NewRequest,
+        None,
+    ),
     cmd("<tab>", "Focus next panel", Action::NextPanel, None),
     cmd(
         "<shift+tab>",
@@ -72,21 +79,15 @@ pub const COMMANDS: &[Command] = &[
     ),
     cmd(
         "<ctrl+g>",
-        "Cycle REST, gRPC, Connect and WebSocket",
+        "Cycle REST, gRPC, Connect, WebSocket and GraphQL",
         Action::ToggleKind,
         None,
     ),
     cmd(
         "<ctrl+t>",
-        "Switch the request box between body and headers",
+        "Switch the request box between body and headers (GraphQL: query, variables, headers)",
         Action::ToggleRequestTab,
         None,
-    ),
-    cmd(
-        "<ctrl+n>",
-        "Next HTTP method",
-        Action::NextMethod,
-        Some(Kind::Http),
     ),
     cmd(
         "<ctrl+p>",
@@ -95,7 +96,7 @@ pub const COMMANDS: &[Command] = &[
         Some(Kind::Http),
     ),
     cmd(
-        "<ctrl+n>",
+        "<ctrl+p>",
         "Pick the gRPC method",
         Action::PickMethod,
         Some(Kind::Grpc),
@@ -105,6 +106,18 @@ pub const COMMANDS: &[Command] = &[
         "Load the schema",
         Action::LoadSchema,
         Some(Kind::Grpc),
+    ),
+    cmd(
+        "<ctrl+p>",
+        "Pick a query or mutation from the introspected schema",
+        Action::PickMethod,
+        Some(Kind::Graphql),
+    ),
+    cmd(
+        "<ctrl+l>",
+        "Introspect the endpoint for its schema",
+        Action::LoadSchema,
+        Some(Kind::Graphql),
     ),
     cmd(
         "<ctrl+o>",
