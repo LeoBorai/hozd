@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use super::grpc::{CallKind, MethodInfo};
+use super::common::{add_missing_header, body_snippet};
 use super::{Header, HttpRequest, HttpResponse, Method};
 
 /// What the user asked to execute.
@@ -42,8 +42,8 @@ impl GraphqlRequest {
     /// The HTTP request that carries this one.
     pub fn to_http(&self) -> Result<HttpRequest, String> {
         let mut headers = self.headers.clone();
-        add_missing(&mut headers, "Content-Type", "application/json");
-        add_missing(&mut headers, "Accept", "application/json");
+        add_missing_header(&mut headers, "Content-Type", "application/json");
+        add_missing_header(&mut headers, "Accept", "application/json");
         Ok(HttpRequest {
             method: Method::Post,
             url: self.url.clone(),
@@ -85,12 +85,6 @@ struct Stored {
     variables: Option<String>,
 }
 
-fn add_missing(headers: &mut Vec<Header>, name: &str, value: &str) {
-    if !headers.iter().any(|h| h.name.eq_ignore_ascii_case(name)) {
-        headers.push(Header::new(name, value));
-    }
-}
-
 // ---- introspection ----------------------------------------------------------------
 
 /// The standard introspection query.
@@ -113,6 +107,62 @@ pub fn introspection_request(url: &str, headers: &[Header]) -> HttpRequest {
     }
     .to_http()
     .expect("introspection payload is valid")
+}
+
+/// Whether an operation reads (`query`) or writes (`mutation`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationKind {
+    Query,
+    Mutation,
+}
+
+impl OperationKind {
+    /// The keyword that starts a document of this kind.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            OperationKind::Query => "query",
+            OperationKind::Mutation => "mutation",
+        }
+    }
+
+    /// `Query` or `Mutation`, the group an operation is listed under.
+    pub fn group(self) -> &'static str {
+        match self {
+            OperationKind::Query => "Query",
+            OperationKind::Mutation => "Mutation",
+        }
+    }
+
+    fn from_group(group: &str) -> Option<Self> {
+        match group {
+            "Query" => Some(OperationKind::Query),
+            "Mutation" => Some(OperationKind::Mutation),
+            _ => None,
+        }
+    }
+}
+
+/// One query or mutation of an introspected schema.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphqlOperation {
+    pub kind: OperationKind,
+    pub name: String,
+}
+
+impl GraphqlOperation {
+    /// `Query/field` or `Mutation/field`.
+    pub fn full_name(&self) -> String {
+        format!("{}/{}", self.kind.group(), self.name)
+    }
+
+    /// Inverse of [`full_name`](Self::full_name).
+    pub fn parse(full_name: &str) -> Option<Self> {
+        let (group, name) = full_name.split_once('/')?;
+        Some(Self {
+            kind: OperationKind::from_group(group)?,
+            name: name.to_owned(),
+        })
+    }
 }
 
 /// A type as written in a schema: `[Int!]!`.
@@ -196,8 +246,8 @@ const SELECTION_WIDTH: usize = 12;
 pub struct GraphqlSchema {
     types: BTreeMap<String, TypeDef>,
     /// `(operation keyword, root type name)`, queries first.
-    roots: Vec<(&'static str, String)>,
-    operations: Vec<MethodInfo>,
+    roots: Vec<(OperationKind, String)>,
+    operations: Vec<GraphqlOperation>,
 }
 
 impl GraphqlSchema {
@@ -207,7 +257,7 @@ impl GraphqlSchema {
             return Err(format!(
                 "introspection failed: HTTP {}{}",
                 response.status,
-                snippet(&response.body)
+                body_snippet(&response.body)
             ));
         }
         let body: Value = serde_json::from_str(&response.body)
@@ -282,9 +332,12 @@ impl GraphqlSchema {
         }
 
         let mut roots = Vec::new();
-        for (keyword, key) in [("query", "queryType"), ("mutation", "mutationType")] {
+        for (kind, key) in [
+            (OperationKind::Query, "queryType"),
+            (OperationKind::Mutation, "mutationType"),
+        ] {
             if let Some(name) = schema[key]["name"].as_str() {
-                roots.push((keyword, name.to_owned()));
+                roots.push((kind, name.to_owned()));
             }
         }
         if roots.is_empty() {
@@ -292,19 +345,17 @@ impl GraphqlSchema {
         }
 
         let mut operations = Vec::new();
-        for (keyword, root) in &roots {
+        for (kind, root) in &roots {
             let Some(def) = types.get(root) else { continue };
-            let service = capitalize(keyword);
             let mut fields: Vec<_> = def
                 .fields
                 .iter()
                 .filter(|f| !f.name.starts_with("__"))
                 .collect();
             fields.sort_by(|a, b| a.name.cmp(&b.name));
-            operations.extend(fields.into_iter().map(|f| MethodInfo {
-                service: service.clone(),
+            operations.extend(fields.into_iter().map(|f| GraphqlOperation {
+                kind: *kind,
                 name: f.name.clone(),
-                kind: CallKind::Unary,
             }));
         }
         Ok(Self {
@@ -314,9 +365,9 @@ impl GraphqlSchema {
         })
     }
 
-    /// The queries and mutations, as `Query/field` and `Mutation/field` (subscriptions need
-    /// a WebSocket transport and are left out).
-    pub fn operations(&self) -> &[MethodInfo] {
+    /// The queries and mutations (subscriptions need a WebSocket transport and are left
+    /// out), queries first.
+    pub fn operations(&self) -> &[GraphqlOperation] {
         &self.operations
     }
 
@@ -324,12 +375,13 @@ impl GraphqlSchema {
         self.types.keys().filter(|n| !n.starts_with("__")).count()
     }
 
-    /// `(query, variables)` to start from for operation `Query/field`: the document with
+    /// `(query, variables)` to start from for `operation`: the document with
     /// every argument as a variable and a shallow selection set, and a JSON object with a
     /// placeholder for each variable (`None` when there are none).
-    pub fn skeleton(&self, operation: &str) -> Option<(String, Option<String>)> {
-        let (service, name) = operation.split_once('/')?;
-        let (keyword, root) = self.roots.iter().find(|(k, _)| capitalize(k) == service)?;
+    pub fn skeleton(&self, operation: &GraphqlOperation) -> Option<(String, Option<String>)> {
+        let name = operation.name.as_str();
+        let (kind, root) = self.roots.iter().find(|(k, _)| *k == operation.kind)?;
+        let keyword = kind.keyword();
         let field = self
             .types
             .get(root)?
@@ -458,15 +510,6 @@ fn capitalize(s: &str) -> String {
         .unwrap_or_default()
 }
 
-fn snippet(body: &str) -> String {
-    let body = body.trim();
-    if body.is_empty() {
-        String::new()
-    } else {
-        format!(": {}", body.chars().take(200).collect::<String>())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -593,7 +636,7 @@ mod tests {
         let names: Vec<_> = schema
             .operations()
             .iter()
-            .map(MethodInfo::full_name)
+            .map(GraphqlOperation::full_name)
             .collect();
         assert_eq!(names, ["Query/user", "Query/users", "Mutation/addUser"]);
         assert_eq!(schema.type_count(), 7);
@@ -602,7 +645,9 @@ mod tests {
     #[test]
     fn skeleton_for_a_query_with_arguments() {
         let schema = GraphqlSchema::from_response(&sample_response()).unwrap();
-        let (query, variables) = schema.skeleton("Query/user").unwrap();
+        let (query, variables) = schema
+            .skeleton(&GraphqlOperation::parse("Query/user").unwrap())
+            .unwrap();
         assert_eq!(
             query,
             "query User($id: ID!) {\n  user(id: $id) {\n    id\n    name\n    role\n    friends {\n      id\n      name\n      role\n    }\n  }\n}\n"
@@ -613,13 +658,17 @@ mod tests {
     #[test]
     fn skeleton_fills_input_objects_and_enums() {
         let schema = GraphqlSchema::from_response(&sample_response()).unwrap();
-        let (query, variables) = schema.skeleton("Mutation/addUser").unwrap();
+        let (query, variables) = schema
+            .skeleton(&GraphqlOperation::parse("Mutation/addUser").unwrap())
+            .unwrap();
         assert!(
             query.starts_with("mutation AddUser($input: NewUser!) {\n  addUser(input: $input) {")
         );
         let v: Value = serde_json::from_str(&variables.unwrap()).unwrap();
         assert_eq!(v, json!({"input": {"name": "", "role": "ADMIN"}}));
-        let (query, variables) = schema.skeleton("Query/users").unwrap();
+        let (query, variables) = schema
+            .skeleton(&GraphqlOperation::parse("Query/users").unwrap())
+            .unwrap();
         assert!(query.starts_with("query Users {\n  users {"));
         assert!(variables.is_none());
     }

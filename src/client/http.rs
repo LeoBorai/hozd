@@ -2,10 +2,10 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 
+use super::common::trace_url_resolve;
 use super::trace::version_name;
 use super::{
     ClientError, Header, HttpClient, HttpRequest, HttpResponse, Method, Trace, trace_certificate,
-    trace_resolve,
 };
 
 /// Plain HTTP(S) client on top of `reqwest`.
@@ -59,10 +59,7 @@ impl HttpClient for ReqwestClient {
         let url = reqwest::Url::parse(request.url.trim())
             .map_err(|e| ClientError::InvalidUrl(format!("{}: {e}", request.url)))?;
 
-        if let Some(host) = url.host_str() {
-            let port = url.port_or_known_default().unwrap_or(80);
-            trace_resolve(trace, host, port).await;
-        }
+        trace_url_resolve(trace, &url).await;
 
         let mut builder = self.inner.request(request.method.into(), url.clone());
         for h in &request.headers {
