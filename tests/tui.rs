@@ -251,17 +251,18 @@ async fn the_schema_file_input_suggests_paths_and_tab_accepts() {
 }
 
 #[tokio::test]
-async fn left_panel_has_both_tabs_and_empty_hints() {
+async fn left_panel_shows_only_the_history_tab_and_its_empty_hint() {
     let mut h = harness().await;
     let out = text(&render(&h.app, 120, 30));
-    assert!(out.contains("Stored") && out.contains("History"));
-    assert!(out.contains("no templates"));
+    assert!(out.contains("History") && !out.contains("Stored"));
+    assert!(out.contains("no requests sent yet"));
 
-    h.app.handle_key(key(KeyCode::Char(']')));
-    assert_eq!(h.app.tab, Tab::History);
-    assert!(text(&render(&h.app, 120, 30)).contains("no requests sent yet"));
     h.app.handle_key(key(KeyCode::Char('[')));
-    assert_eq!(h.app.tab, Tab::Stored);
+    assert_eq!(
+        h.app.tab,
+        Tab::History,
+        "no key reaches the hidden Stored tab"
+    );
 }
 
 #[tokio::test]
@@ -276,13 +277,14 @@ async fn stored_tab_groups_templates_by_project() {
     .unwrap();
     let store = History::open(&tmp.path().join("db.sqlite3")).await.unwrap();
     let (tx, _rx) = unbounded_channel();
-    let app = App::new(
+    let mut app = App::new(
         Arc::new(FakeClient::new(Ok(ok_response()))),
         Arc::new(FakeGrpc::default()),
         store,
         load_projects(&tmp.path().join("projects")),
         tx,
     );
+    app.set_tab(Tab::Stored);
     let out = text(&render(&app, 120, 30));
     assert!(out.contains("api/") && out.contains("Create user"), "{out}");
 }
@@ -451,6 +453,7 @@ async fn enter_on_stored_template_loads_it_ready_to_send() {
         load_projects(&tmp.path().join("projects")),
         tx,
     );
+    app.set_tab(Tab::Stored);
 
     // hovering previews the template in the center panel
     assert_eq!(app.view().request.url, "http://x/t");
@@ -498,15 +501,13 @@ fn click(app: &mut App, x: u16, y: u16) {
 }
 
 #[tokio::test]
-async fn clicking_tabs_switches_them() {
+async fn clicking_the_tab_row_never_reaches_stored() {
     let mut h = harness().await;
     let a = ui::areas(SCREEN);
-    click(&mut h.app, a.tabs.x + 12, a.tabs.y); // inside " History "
+    click(&mut h.app, a.tabs.x + 12, a.tabs.y); // right of " History "
+    assert_eq!(h.app.tab, Tab::History);
+    click(&mut h.app, a.tabs.x + 2, a.tabs.y); // inside " History "
     assert_eq!((h.app.tab, h.app.focus), (Tab::History, Focus::List));
-    click(&mut h.app, a.tabs.x + 2, a.tabs.y); // inside " Stored "
-    assert_eq!(h.app.tab, Tab::Stored);
-    click(&mut h.app, a.tabs.x + 8, a.tabs.y); // the divider
-    assert_eq!(h.app.tab, Tab::Stored);
 }
 
 #[tokio::test]
@@ -564,6 +565,7 @@ async fn clicking_stored_templates_skips_project_headers() {
         load_projects(&tmp.path().join("projects")),
         tx,
     );
+    app.set_tab(Tab::Stored);
     let a = ui::areas(SCREEN);
     // rows: 0 "api/", 1 a, 2 b, 3 "web/", 4 c
     click(&mut app, a.list.x + 2, a.list.y); // header: ignored
@@ -1329,7 +1331,7 @@ async fn error_messages_open_too() {
 
 // ---- gRPC mode: kind toggle and loading ------------------------------------------
 
-use hozd::client::{GrpcRequest, Kind, SchemaSource};
+use hozd::client::{GrpcRequest, Kind, Protocol, SchemaSource};
 use ratatui_textarea::TextArea;
 
 fn grpc_request() -> GrpcRequest {
@@ -1338,6 +1340,7 @@ fn grpc_request() -> GrpcRequest {
         method: "user.v1.UserService/GetUser".into(),
         schema: SchemaSource::File("api/user.proto".into()),
         insecure: true,
+        protocol: Default::default(),
         metadata: vec![Header::new("authorization", "Bearer t")],
         body: Some("{\n  \"id\": 7\n}".into()),
     }
@@ -1363,6 +1366,13 @@ async fn ctrl_g_switches_kind_keeping_address_body_and_headers() {
     assert_eq!(h.app.editor_grpc_request().address, "http://x/t");
 
     h.app.handle_key(ctrl('g'));
+    assert_eq!(
+        (h.app.kind, h.app.protocol),
+        (Kind::Grpc, Protocol::Connect)
+    );
+    assert_eq!(h.app.url_text(), url);
+
+    h.app.handle_key(ctrl('g'));
     assert_eq!(h.app.kind, Kind::Http);
     assert_eq!(h.app.url_text(), url);
 }
@@ -1371,8 +1381,8 @@ async fn ctrl_g_switches_kind_keeping_address_body_and_headers() {
 async fn clicking_the_kind_labels_switches_kind() {
     let mut h = harness().await;
     let url = ui::areas(SCREEN).url;
-    // The labels sit right-aligned in the top border of the URL box: ` REST | gRPC `.
-    let start = url.right() - 1 - " REST | gRPC ".len() as u16;
+    // The labels sit right-aligned in the top border of the URL box: ` REST | gRPC | Connect `.
+    let start = url.right() - 1 - " REST | gRPC | Connect ".len() as u16;
 
     click(&mut h.app, start + 9, url.y); // inside `gRPC`
     assert_eq!(h.app.kind, Kind::Grpc);
@@ -1381,6 +1391,11 @@ async fn clicking_the_kind_labels_switches_kind() {
         h.app.kind,
         Kind::Grpc,
         "clicking the active label changes nothing"
+    );
+    click(&mut h.app, start + 17, url.y); // inside `Connect`
+    assert_eq!(
+        (h.app.kind, h.app.protocol),
+        (Kind::Grpc, Protocol::Connect)
     );
     click(&mut h.app, start + 2, url.y); // inside `REST`
     assert_eq!(h.app.kind, Kind::Http);
@@ -1552,7 +1567,7 @@ async fn insecure_mode_is_flagged_on_the_address_row_for_tls_addresses_only() {
         insecure: true,
         ..Default::default()
     }));
-    let out = grpc_screen(&h.app);
+    let out = text(&render(&h.app, 160, 30));
     assert!(
         out.contains("NOT VERIFIED") && out.contains("insecure"),
         "{out}"
@@ -1612,7 +1627,7 @@ async fn hovering_a_grpc_history_entry_previews_it_even_in_rest_mode() {
     pump(&mut h, |a| a.view().request.kind == Kind::Grpc).await;
 
     assert_eq!(h.app.kind, Kind::Http, "only the panels preview");
-    let out = grpc_screen(&h.app);
+    let out = text(&render(&h.app, 160, 30));
     for expected in [
         "Address (preview)",
         "https://api.example.com:443",
@@ -2317,6 +2332,7 @@ async fn stored_rows_tag_grpc_templates_and_preview_and_load_them() {
         load_projects(&tmp.path().join("projects")),
         tx,
     );
+    app.set_tab(Tab::Stored);
 
     let left = left_panel(&app);
     assert!(left.contains("GET    List things"), "{left}");

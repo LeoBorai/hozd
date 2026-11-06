@@ -1,5 +1,6 @@
 mod codec;
 mod connect;
+mod connect_rpc;
 mod fake;
 mod load;
 mod reflection;
@@ -22,7 +23,7 @@ pub use load::load_schema_file;
 pub use reflection::reflect;
 pub use schema::{CallKind, MethodInfo, Schema};
 pub use tonic_client::TonicGrpc;
-pub use types::{GrpcOutcome, GrpcRequest, GrpcStatus, SchemaSource, status_name};
+pub use types::{GrpcOutcome, GrpcRequest, GrpcStatus, Protocol, SchemaSource, status_name};
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum GrpcError {

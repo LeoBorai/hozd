@@ -161,6 +161,7 @@ fn grpc_request() -> Request {
         method: "user.v1.UserService/ListUsers".into(),
         schema: SchemaSource::File("api/user.proto".into()),
         insecure: true,
+        protocol: Default::default(),
         metadata: vec![Header::new("authorization", "Bearer t")],
         body: Some("{\"pageSize\": 3}".into()),
     })

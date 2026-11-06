@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::client::{
     CallEvent, CallKind, GrpcOutcome, GrpcRequest, GrpcStatus, Header, HttpRequest, Kind, Method,
-    Request, Schema, SchemaSource, SharedGrpc, SharedHttp, Trace,
+    Protocol, Request, Schema, SchemaSource, SharedGrpc, SharedHttp, Trace,
 };
 use crate::history::{History, HistoryEntry, Outcome, Summary};
 use crate::project::{Loaded, Template};
@@ -129,6 +129,7 @@ pub struct GrpcView {
     pub method: String,
     pub schema: SchemaSource,
     pub insecure: bool,
+    pub protocol: Protocol,
 }
 
 impl From<&HttpRequest> for RequestView {
@@ -158,6 +159,7 @@ impl From<&Request> for RequestView {
                     method: r.method.clone(),
                     schema: r.schema.clone(),
                     insecure: r.insecure,
+                    protocol: r.protocol,
                 },
             },
         }
@@ -205,6 +207,8 @@ pub struct App {
     suggested_for: Option<String>,
     /// gRPC editor: skip TLS certificate verification.
     pub insecure: bool,
+    /// gRPC editor: gRPC or ConnectRPC.
+    pub protocol: Protocol,
     /// gRPC editor: the `package.Service/Method` to call.
     pub selected_method: Option<String>,
     /// The schema loaded for the gRPC editor, if any.
@@ -274,7 +278,7 @@ impl App {
             .collect();
 
         let app = Self {
-            tab: Tab::Stored,
+            tab: Tab::History,
             focus: Focus::List,
             templates,
             stored_sel: 0,
@@ -291,6 +295,7 @@ impl App {
             suggestions: Suggestions::default(),
             suggested_for: None,
             insecure: false,
+            protocol: Protocol::default(),
             selected_method: None,
             schema: None,
             schema_loading: false,
@@ -417,6 +422,7 @@ impl App {
             method: self.selected_method.clone().unwrap_or_default(),
             schema: self.schema_source(),
             insecure: self.insecure,
+            protocol: self.protocol,
             metadata,
             body: (!body.is_empty()).then_some(body),
         }
@@ -1026,13 +1032,16 @@ impl App {
         }
     }
 
-    /// Switches the editor between REST and gRPC. The address/URL, body and
+    /// Cycles the editor through REST, gRPC and Connect. The address/URL, body and
     /// headers/metadata texts are kept.
     pub fn toggle_kind(&mut self) {
-        self.set_kind(match self.kind {
-            Kind::Http => Kind::Grpc,
-            Kind::Grpc => Kind::Http,
-        });
+        let (kind, protocol) = match (self.kind, self.protocol) {
+            (Kind::Http, _) => (Kind::Grpc, Protocol::Grpc),
+            (Kind::Grpc, Protocol::Grpc) => (Kind::Grpc, Protocol::Connect),
+            (Kind::Grpc, Protocol::Connect) => (Kind::Http, Protocol::Grpc),
+        };
+        self.protocol = protocol;
+        self.set_kind(kind);
     }
 
     pub fn set_kind(&mut self, kind: Kind) {
@@ -1068,8 +1077,6 @@ impl App {
         match code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('y') => self.copy_response(),
-            KeyCode::Char('[') | KeyCode::Left | KeyCode::Char('h') => self.set_tab(Tab::Stored),
-            KeyCode::Char(']') | KeyCode::Right | KeyCode::Char('l') => self.set_tab(Tab::History),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Enter => self.activate(),
@@ -1250,7 +1257,8 @@ impl App {
         } else if areas.rpc.contains(at) {
             self.focus_editor(Focus::Method);
             self.open_picker();
-        } else if let Some(kind) = ui::kind_at(areas.url, at) {
+        } else if let Some((kind, protocol)) = ui::kind_at(areas.url, at) {
+            self.protocol = protocol;
             self.set_kind(kind);
         } else if areas.url.contains(at) {
             self.focus_editor(Focus::Url);
@@ -1457,6 +1465,7 @@ impl App {
             }
         }
         self.insecure = request.insecure;
+        self.protocol = request.protocol;
         self.body = request
             .body
             .as_deref()

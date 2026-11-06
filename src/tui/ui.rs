@@ -7,7 +7,7 @@ use ratatui::widgets::{
 };
 use ratatui_textarea::TextArea;
 
-use crate::client::{Kind, Method, SchemaSource, status_name};
+use crate::client::{Kind, Method, Protocol, SchemaSource, status_name};
 use crate::history::Outcome;
 use crate::project::TemplateKind;
 
@@ -191,11 +191,11 @@ pub fn areas_for(area: Rect, kind: Kind) -> Areas {
 }
 
 /// The kind selector in the top border of the URL box, right-aligned.
-const KIND_LABEL: &str = " REST | gRPC ";
+const KIND_LABEL: &str = " REST | gRPC | Connect ";
 
 /// Which kind label sits under `at`: the selector is drawn in the top border of the URL
 /// box (`url` is its outer rect), right-aligned and one column short of the corner.
-pub fn kind_at(url: Rect, at: Position) -> Option<Kind> {
+pub fn kind_at(url: Rect, at: Position) -> Option<(Kind, Protocol)> {
     if at.y != url.y {
         return None;
     }
@@ -203,23 +203,22 @@ pub fn kind_at(url: Rect, at: Position) -> Option<Kind> {
     let start = url.right().checked_sub(1 + width)?;
     let offset = at.x.checked_sub(start)?;
     match offset {
-        o if o < 7 => Some(Kind::Http),
-        o if o < width => Some(Kind::Grpc),
+        o if o < 7 => Some((Kind::Http, Protocol::Grpc)),
+        o if o < 14 => Some((Kind::Grpc, Protocol::Grpc)),
+        o if o < width => Some((Kind::Grpc, Protocol::Connect)),
         _ => None,
     }
 }
 
-const STORED_TAB_WIDTH: u16 = " Stored ".len() as u16;
+const HISTORY_TAB_WIDTH: u16 = " History ".len() as u16;
 
 /// Which tab title sits under column `x` of the tab row. Matches `Tabs` default padding
 /// (one space each side of a title) and the one-column `|` divider.
 pub fn tab_at(tabs: Rect, x: u16) -> Option<Tab> {
     let offset = x.checked_sub(tabs.x)?;
-    let history_width = " History ".len() as u16;
     match offset {
-        o if o < STORED_TAB_WIDTH => Some(Tab::Stored),
-        o if o == STORED_TAB_WIDTH => None, // divider
-        o if o <= STORED_TAB_WIDTH + history_width => Some(Tab::History),
+        o if o < HISTORY_TAB_WIDTH => Some(Tab::History),
+        o if o == HISTORY_TAB_WIDTH => None, // divider
         _ => None,
     }
 }
@@ -718,12 +717,10 @@ fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(outer, area);
 
     let (tabs, list) = left_areas(area);
-    let selected = match app.tab {
-        Tab::Stored => 0,
-        Tab::History => 1,
-    };
+    // The Stored tab is hidden; History is the only one shown.
+    let selected = 0;
     frame.render_widget(
-        Tabs::new(["Stored", "History"])
+        Tabs::new(["History"])
             .select(selected)
             .highlight_style(
                 Style::new()
@@ -777,6 +774,9 @@ fn stored_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) {
             Span::raw("  "),
             match &t.template.kind {
                 TemplateKind::Http(h) => method_span(h.method),
+                TemplateKind::Grpc(g) if g.protocol == Protocol::Connect => {
+                    Span::styled("Connect", Style::new().fg(Color::Cyan))
+                }
                 TemplateKind::Grpc(_) => Span::styled("gRPC  ", Style::new().fg(Color::Magenta)),
             },
             Span::raw(format!(" {}", t.template.name)),
@@ -910,9 +910,10 @@ fn draw_address(
     let selected = Style::new()
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         .fg(Color::Yellow);
-    let (rest_style, grpc_style) = match request.kind {
-        Kind::Http => (selected, Style::new()),
-        Kind::Grpc => (Style::new(), selected),
+    let (rest_style, grpc_style, connect_style) = match (request.kind, request.grpc.protocol) {
+        (Kind::Http, _) => (selected, Style::new(), Style::new()),
+        (Kind::Grpc, Protocol::Grpc) => (Style::new(), selected, Style::new()),
+        (Kind::Grpc, Protocol::Connect) => (Style::new(), Style::new(), selected),
     };
     let mut title_spans = vec![Span::raw(format!(
         " {} ",
@@ -934,6 +935,8 @@ fn draw_address(
             Span::styled("REST", rest_style),
             Span::raw(" | "),
             Span::styled("gRPC", grpc_style),
+            Span::raw(" | "),
+            Span::styled("Connect", connect_style),
             Span::raw(" "),
         ])
         .right_aligned(),
