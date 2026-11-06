@@ -232,3 +232,98 @@ async fn graphql_layout_shows_endpoint_operation_and_query_tabs() {
         assert!(out.contains(expected), "missing `{expected}`");
     }
 }
+
+fn two_operation_schema() -> serde_json::Value {
+    let scalar = |name: &str| json!({"kind": "SCALAR", "name": name, "ofType": null});
+    json!({"data": {"__schema": {
+        "queryType": {"name": "Query"},
+        "mutationType": {"name": "Mutation"},
+        "subscriptionType": null,
+        "types": [
+            {"kind": "OBJECT", "name": "Query", "fields": [
+                {"name": "hello", "args": [], "type": scalar("String")}
+            ]},
+            {"kind": "OBJECT", "name": "Mutation", "fields": [
+                {"name": "reset", "args": [], "type": scalar("String")}
+            ]},
+            {"kind": "SCALAR", "name": "String"}
+        ]
+    }}})
+}
+
+async fn introspected_app(query: Option<&str>) -> (App, MockServer, tempfile::TempDir) {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(two_operation_schema()))
+        .mount(&server)
+        .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let store = History::open(&tmp.path().join("db.sqlite3")).await.unwrap();
+    let (tx, mut rx) = unbounded_channel();
+    let mut app = App::new(
+        Arc::new(ReqwestClient::new()),
+        Arc::new(FakeGrpc::default()),
+        store,
+        Loaded::default(),
+        tx,
+    );
+    app.handle_key(key(KeyCode::Tab));
+    type_text(&mut app, &server.uri());
+    for _ in 0..4 {
+        app.handle_key(ctrl('g'));
+    }
+    if let Some(query) = query {
+        app.body = ratatui_textarea::TextArea::new(vec![query.into()]);
+    }
+    app.handle_key(ctrl('l'));
+    pump(&mut app, &mut rx, |a| a.current_graphql().is_some()).await;
+    (app, server, tmp)
+}
+
+#[tokio::test]
+async fn hovering_an_operation_prefills_the_query_and_escape_restores_it() {
+    let (mut app, _server, _tmp) = introspected_app(None).await;
+
+    app.handle_key(ctrl('p'));
+    let kinds: Vec<_> = app.picker_matches().iter().map(|m| m.tag.label()).collect();
+    assert_eq!(kinds, ["query", "mutation"]);
+    // the first operation is hovered as soon as the picker opens
+    assert!(
+        app.body_text().starts_with("query Hello"),
+        "{}",
+        app.body_text()
+    );
+
+    app.handle_key(key(KeyCode::Down));
+    assert!(
+        app.body_text().starts_with("mutation Reset"),
+        "{}",
+        app.body_text()
+    );
+    assert!(app.selected_method.is_none(), "hovering does not pick");
+
+    app.handle_key(key(KeyCode::Esc));
+    assert!(app.picker.is_none());
+    assert_eq!(app.body_text(), "");
+    assert_eq!(app.variables_text(), "");
+}
+
+#[tokio::test]
+async fn enter_keeps_the_hovered_operation() {
+    let (mut app, _server, _tmp) = introspected_app(None).await;
+    app.handle_key(ctrl('p'));
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.selected_method.as_deref(), Some("Mutation/reset"));
+    assert!(app.body_text().starts_with("mutation Reset"));
+}
+
+#[tokio::test]
+async fn hovering_never_overwrites_a_written_query() {
+    let (mut app, _server, _tmp) = introspected_app(Some("{ mine }")).await;
+    app.handle_key(ctrl('p'));
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.body_text(), "{ mine }");
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(app.body_text(), "{ mine }");
+}

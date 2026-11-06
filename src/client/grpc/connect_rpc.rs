@@ -11,7 +11,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::{
     CallEvent, CallKind, GrpcError, GrpcOutcome, GrpcRequest, GrpcStatus, message_to_json,
 };
-use crate::client::{Header, Trace, trace_resolve};
+use crate::client::common::trace_url_resolve;
+use crate::client::{Header, Trace};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const END_STREAM: u8 = 0b10;
@@ -156,9 +157,7 @@ pub async fn call(
             let _ = tx.send(CallEvent::Log(line));
         })
     };
-    if let Some(host) = url.host_str() {
-        trace_resolve(&trace, host, url.port_or_known_default().unwrap_or(80)).await;
-    }
+    trace_url_resolve(&trace, &url).await;
 
     let payload = messages
         .first()

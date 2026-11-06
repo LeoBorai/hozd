@@ -3,7 +3,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 pub use fake::FakeClient;
-pub use graphql::{GraphqlRequest, GraphqlSchema, introspection_request};
+pub use graphql::{
+    GraphqlOperation, GraphqlRequest, GraphqlSchema, OperationKind, introspection_request,
+};
 pub use grpc::{
     CallEvent, CallHandle, CallKind, FakeGrpc, FakeStep, GrpcClient, GrpcError, GrpcOutcome,
     GrpcRequest, GrpcStatus, MethodInfo, Protocol, Schema, SchemaSource, SharedGrpc, TonicGrpc,
@@ -19,6 +21,7 @@ pub use ws::{
 
 pub mod grpc;
 
+mod common;
 mod fake;
 mod graphql;
 mod http;

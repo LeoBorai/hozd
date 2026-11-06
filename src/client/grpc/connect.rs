@@ -16,6 +16,7 @@ use tonic::codegen::http::uri::Scheme;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 
 use super::GrpcError;
+use crate::client::common::install_crypto_provider;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -56,15 +57,6 @@ pub async fn connect(address: &str, insecure: bool) -> Result<Channel, GrpcError
             .await
     };
     connected.map_err(|e| GrpcError::Connect(describe(address, secure && !insecure, &e)))
-}
-
-/// Several crates in the build enable different rustls providers, so rustls cannot pick a
-/// process default by itself; choose `ring` once.
-pub(crate) fn install_crypto_provider() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    });
 }
 
 /// The cause is in the source chain; `transport error` alone says nothing.

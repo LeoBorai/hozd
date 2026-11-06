@@ -11,9 +11,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::{
-    CallEvent, CallKind, GraphqlRequest, GraphqlSchema, GrpcOutcome, GrpcRequest, GrpcStatus,
-    Header, HttpRequest, Kind, Method, Protocol, Request, Schema, SchemaSource, SharedGrpc,
-    SharedHttp, SharedWs, Trace, TungsteniteWs, WsEvent, WsOutcome, WsRequest, introspect,
+    CallEvent, CallKind, GraphqlOperation, GraphqlRequest, GraphqlSchema, GrpcOutcome, GrpcRequest,
+    GrpcStatus, Header, HttpRequest, Kind, Method, OperationKind, Protocol, Request, Schema,
+    SchemaSource, SharedGrpc, SharedHttp, SharedWs, Trace, TungsteniteWs, WsEvent, WsOutcome,
+    WsRequest, introspect,
 };
 use crate::history::{History, HistoryEntry, Outcome, Summary};
 use crate::project::{Loaded, Template};
@@ -91,6 +92,50 @@ pub struct Picker {
     pub filter: String,
     /// Index into [`App::picker_matches`].
     pub selected: usize,
+    /// The GraphQL editors as they were when the picker opened, kept while the highlighted
+    /// operation is previewed in them; `None` when nothing is previewed (gRPC, or a query
+    /// already written).
+    pub origin: Option<PickerOrigin>,
+}
+
+/// The query and variables texts to put back when the picker closes without a pick.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PickerOrigin {
+    pub query: String,
+    pub variables: String,
+}
+
+/// What a picker row is: a gRPC method with its call kind, or a GraphQL operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerTag {
+    Call(CallKind),
+    Query,
+    Mutation,
+}
+
+impl PickerTag {
+    pub fn label(self) -> &'static str {
+        match self {
+            PickerTag::Call(kind) => kind.label(),
+            PickerTag::Query => "query",
+            PickerTag::Mutation => "mutation",
+        }
+    }
+}
+
+/// One row of the picker: a method or operation, listed under its `group`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickerItem {
+    /// The gRPC service, or `Query`/`Mutation`.
+    pub group: String,
+    pub name: String,
+    pub tag: PickerTag,
+}
+
+impl PickerItem {
+    pub fn full_name(&self) -> String {
+        format!("{}/{}", self.group, self.name)
+    }
 }
 
 /// Where the gRPC editor takes the schema from.
@@ -1089,33 +1134,107 @@ impl App {
             _ => return,
         }
         self.status = None;
-        self.picker = Some(Picker::default());
+        let origin =
+            (self.kind == Kind::Graphql && self.body_text().trim().is_empty()).then(|| {
+                PickerOrigin {
+                    query: self.body_text(),
+                    variables: self.variables_text(),
+                }
+            });
+        self.picker = Some(Picker {
+            origin,
+            ..Picker::default()
+        });
+        self.preview_selected();
     }
 
-    /// The methods the picker lists: those whose `service/method` contains the filter,
-    /// ignoring case, in schema order (grouped by service).
-    pub fn picker_matches(&self) -> Vec<crate::client::MethodInfo> {
+    /// Closes the picker without picking; a previewed operation is taken back out of the
+    /// editors.
+    pub fn close_picker(&mut self) {
+        let Some(picker) = self.picker.take() else {
+            return;
+        };
+        if let Some(origin) = picker.origin {
+            self.set_graphql_editors(&origin.query, &origin.variables);
+        }
+    }
+
+    /// Puts the highlighted GraphQL operation's skeleton in the editors (hover preview), or
+    /// the original texts back when nothing is highlighted. Does nothing when the user had
+    /// written a query before opening the picker.
+    fn preview_selected(&mut self) {
+        let Some(picker) = &self.picker else {
+            return;
+        };
+        let Some(origin) = picker.origin.clone() else {
+            return;
+        };
+        let selected = picker.selected;
+        let skeleton = self
+            .picker_matches()
+            .get(selected)
+            .and_then(|item| self.graphql_skeleton(&item.full_name()));
+        match skeleton {
+            Some((query, variables)) => {
+                self.set_graphql_editors(&query, &variables.unwrap_or_default())
+            }
+            None => self.set_graphql_editors(&origin.query, &origin.variables),
+        }
+    }
+
+    fn graphql_skeleton(&self, full_name: &str) -> Option<(String, Option<String>)> {
+        let operation = GraphqlOperation::parse(full_name)?;
+        self.current_graphql()?.skeleton(&operation)
+    }
+
+    fn set_graphql_editors(&mut self, query: &str, variables: &str) {
+        self.body = TextArea::new(query.lines().map(str::to_owned).collect());
+        self.variables = TextArea::new(variables.lines().map(str::to_owned).collect());
+    }
+
+    /// The rows the picker lists: those whose `group/name` contains the filter, ignoring
+    /// case, in schema order (grouped by service, or queries before mutations).
+    pub fn picker_matches(&self) -> Vec<PickerItem> {
         let Some(picker) = &self.picker else {
             return Vec::new();
         };
-        let methods = if self.kind == Kind::Graphql {
-            self.current_graphql().map(GraphqlSchema::operations)
+        let items: Vec<PickerItem> = if self.kind == Kind::Graphql {
+            let operations = self.current_graphql().map(GraphqlSchema::operations);
+            operations
+                .unwrap_or_default()
+                .iter()
+                .map(|o| PickerItem {
+                    group: o.kind.group().to_owned(),
+                    name: o.name.clone(),
+                    tag: match o.kind {
+                        OperationKind::Query => PickerTag::Query,
+                        OperationKind::Mutation => PickerTag::Mutation,
+                    },
+                })
+                .collect()
         } else {
-            self.current_schema().map(Schema::methods)
+            let methods = self.current_schema().map(Schema::methods);
+            methods
+                .unwrap_or_default()
+                .iter()
+                .map(|m| PickerItem {
+                    group: m.service.clone(),
+                    name: m.name.clone(),
+                    tag: PickerTag::Call(m.kind),
+                })
+                .collect()
         };
         let filter = picker.filter.to_lowercase();
-        methods
-            .unwrap_or_default()
-            .iter()
+        items
+            .into_iter()
             .filter(|m| m.full_name().to_lowercase().contains(&filter))
-            .cloned()
             .collect()
     }
 
     fn picker_key(&mut self, code: KeyCode, ctrl: bool) {
         match (code, ctrl) {
             (KeyCode::Char('c'), true) => self.should_quit = true,
-            (KeyCode::Esc, _) => self.picker = None,
+            (KeyCode::Esc, _) => self.close_picker(),
             (KeyCode::Enter, _) => self.pick_selected(),
             (KeyCode::Down | KeyCode::Char('n'), _) if ctrl || code == KeyCode::Down => {
                 self.move_picker(1)
@@ -1130,12 +1249,14 @@ impl App {
                     picker.filter.pop();
                     picker.selected = 0;
                 }
+                self.preview_selected();
             }
             (KeyCode::Char(c), false) => {
                 if let Some(picker) = &mut self.picker {
                     picker.filter.push(c);
                     picker.selected = 0;
                 }
+                self.preview_selected();
             }
             _ => {}
         }
@@ -1149,6 +1270,7 @@ impl App {
                 .saturating_add_signed(delta)
                 .min(len.saturating_sub(1));
         }
+        self.preview_selected();
     }
 
     /// Selects the highlighted method; an empty body is filled with the input message's
@@ -1164,24 +1286,15 @@ impl App {
         let Some(full_name) = self.picker_matches().get(index).map(|m| m.full_name()) else {
             return;
         };
+        if let Some(picker) = &mut self.picker {
+            picker.selected = index;
+        }
+        // The hovered operation is already in the editors when the query was empty; a
+        // written query is never touched.
+        self.preview_selected();
         self.picker = None;
-        if self.kind == Kind::Graphql {
-            // Both editors are filled in only when the query is still empty.
-            if self.body_text().trim().is_empty()
-                && let Some((query, variables)) = self
-                    .current_graphql()
-                    .and_then(|schema| schema.skeleton(&full_name))
-            {
-                self.body = TextArea::new(query.lines().map(str::to_owned).collect());
-                self.variables = TextArea::new(
-                    variables
-                        .unwrap_or_default()
-                        .lines()
-                        .map(str::to_owned)
-                        .collect(),
-                );
-            }
-        } else if self.body_text().trim().is_empty()
+        if self.kind != Kind::Graphql
+            && self.body_text().trim().is_empty()
             && let Some(skeleton) = self
                 .current_schema()
                 .and_then(|schema| schema.skeleton(&full_name))
@@ -1455,24 +1568,38 @@ impl App {
         }
     }
 
+    /// The index into [`picker_matches`](Self::picker_matches) under `at`, if it is a row.
+    fn picker_row_at(&self, at: Position, popup: Rect) -> Option<usize> {
+        let list = ui::picker_list_area(popup);
+        if !list.contains(at) {
+            return None;
+        }
+        let map = ui::picker_row_map(self);
+        let selected = self.picker.as_ref().map(|p| p.selected);
+        let selected_row = map.iter().position(|r| *r == selected);
+        let row = (at.y - list.y) as usize + ui::list_offset(selected_row, list.height);
+        map.get(row).copied().flatten()
+    }
+
     fn picker_mouse(&mut self, event: MouseEvent, screen: Rect) {
         let at = Position::new(event.column, event.row);
         let popup = ui::picker_area(screen);
         match event.kind {
             MouseEventKind::ScrollDown => self.move_picker(1),
             MouseEventKind::ScrollUp => self.move_picker(-1),
-            MouseEventKind::Down(MouseButton::Left) if !popup.contains(at) => self.picker = None,
+            MouseEventKind::Down(MouseButton::Left) if !popup.contains(at) => self.close_picker(),
             MouseEventKind::Down(MouseButton::Left) => {
-                let list = ui::picker_list_area(popup);
-                if !list.contains(at) {
-                    return;
+                if let Some(index) = self.picker_row_at(at, popup) {
+                    self.pick(index);
                 }
-                let map = ui::picker_row_map(self);
-                let selected = self.picker.as_ref().map(|p| p.selected);
-                let selected_row = map.iter().position(|r| *r == selected);
-                let row = (at.y - list.y) as usize + ui::list_offset(selected_row, list.height);
-                if let Some(Some(index)) = map.get(row) {
-                    self.pick(*index);
+            }
+            MouseEventKind::Moved => {
+                if let Some(index) = self.picker_row_at(at, popup)
+                    && let Some(picker) = &mut self.picker
+                    && picker.selected != index
+                {
+                    picker.selected = index;
+                    self.preview_selected();
                 }
             }
             _ => {}

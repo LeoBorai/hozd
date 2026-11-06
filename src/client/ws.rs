@@ -14,7 +14,7 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_util::sync::CancellationToken;
 
 use super::Header;
-use super::grpc::install_crypto_provider;
+use super::common::install_crypto_provider;
 
 /// How long a closing handshake may take before the socket is dropped.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);

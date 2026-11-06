@@ -1,0 +1,354 @@
+//! Geometry of the screen: where each panel and widget sits, and hit-testing for the mouse.
+
+use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
+
+use crate::client::{Kind, Protocol};
+use crate::tui::app::{App, RequestTab, Tab};
+
+/// Left, center and right panels on a 12-column grid: 3-6-3.
+pub fn panel_areas(area: Rect) -> [Rect; 3] {
+    Layout::horizontal([
+        Constraint::Ratio(3, 12),
+        Constraint::Ratio(6, 12),
+        Constraint::Ratio(3, 12),
+    ])
+    .areas(area)
+}
+
+/// Content area inside a bordered block.
+pub fn inner(area: Rect) -> Rect {
+    area.inner(Margin::new(1, 1))
+}
+
+/// Every clickable region, as drawn. `draw` and mouse hit-testing both use this so they
+/// can never disagree. Rects marked "outer" include the border.
+#[derive(Debug, Clone, Copy)]
+pub struct Areas {
+    pub tabs: Rect,
+    pub list: Rect,
+    /// The log box (outer).
+    pub logs: Rect,
+    pub method: Rect,
+    pub url: Rect,
+    /// gRPC mode only.
+    pub schema: Rect,
+    /// The method picker box; gRPC mode only.
+    pub rpc: Rect,
+    pub body: Rect,
+    pub response: Rect,
+    pub response_body: Rect,
+}
+
+/// Splits the left column 50/50: the request list on top, the log below. Both are outer
+/// rects.
+pub(crate) fn left_split(left: Rect) -> (Rect, Rect) {
+    let [requests, log] =
+        Layout::vertical([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(left);
+    (requests, log)
+}
+
+/// Splits the request list's outer rect into its tab row and list.
+pub(crate) fn left_areas(requests: Rect) -> (Rect, Rect) {
+    let [tabs, list] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner(requests));
+    (tabs, list)
+}
+
+/// Outer rects of the center panel's boxes. `schema` and `rpc` only exist in gRPC mode
+/// and are empty otherwise; `method` holds the TLS state there.
+pub(crate) struct Center {
+    pub(crate) method: Rect,
+    pub(crate) url: Rect,
+    pub(crate) schema: Rect,
+    pub(crate) rpc: Rect,
+    pub(crate) body: Rect,
+}
+
+pub(crate) fn center_areas(center: Rect, kind: Kind) -> Center {
+    let top_row = |top: Rect| {
+        Layout::horizontal([Constraint::Length(12), Constraint::Min(10)]).areas::<2>(top)
+    };
+    match kind {
+        Kind::Http | Kind::Ws => {
+            let [top, body] =
+                Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(center);
+            let [method, url] = top_row(top);
+            Center {
+                method,
+                url,
+                schema: Rect::ZERO,
+                rpc: Rect::ZERO,
+                body,
+            }
+        }
+        Kind::Graphql => {
+            let [top, rpc, body] = Layout::vertical([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(3),
+            ])
+            .areas(center);
+            let [method, url] = top_row(top);
+            Center {
+                method,
+                url,
+                schema: Rect::ZERO,
+                rpc,
+                body,
+            }
+        }
+        Kind::Grpc => {
+            let [top, schema, rpc, body] = Layout::vertical([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(3),
+            ])
+            .areas(center);
+            let [method, url] = top_row(top);
+            Center {
+                method,
+                url,
+                schema,
+                rpc,
+                body,
+            }
+        }
+    }
+}
+
+/// Outer rects of the status, headers and body boxes.
+pub(crate) fn right_areas(right: Rect) -> (Rect, Rect, Rect) {
+    Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Percentage(30),
+        Constraint::Min(3),
+    ])
+    .areas::<3>(right)
+    .into()
+}
+
+pub(crate) fn main_area(area: Rect) -> (Rect, Rect) {
+    let [main, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    (main, status)
+}
+
+/// The big reading panel: the whole main area with a small margin.
+pub fn modal_area(area: Rect) -> Rect {
+    let (main, _) = main_area(area);
+    main.inner(Margin::new(2, 1))
+}
+
+/// The regions of the REST layout.
+/// The method picker: the center panel with a one-cell margin.
+pub fn picker_area(area: Rect) -> Rect {
+    let (main, _) = main_area(area);
+    let [_, center, _] = panel_areas(main);
+    center.inner(Margin::new(1, 1))
+}
+
+/// The rows of the picker where methods are listed: below the filter line.
+pub fn picker_list_area(picker: Rect) -> Rect {
+    let [_, list] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner(picker));
+    list
+}
+
+/// What each row of the picker shows: `None` for a service header, else the index of the
+/// method in [`App::picker_matches`].
+pub fn picker_row_map(app: &App) -> Vec<Option<usize>> {
+    let mut rows = Vec::new();
+    let mut last_service: Option<String> = None;
+    for (i, m) in app.picker_matches().into_iter().enumerate() {
+        if last_service.as_deref() != Some(m.group.as_str()) {
+            rows.push(None);
+            last_service = Some(m.group.clone());
+        }
+        rows.push(Some(i));
+    }
+    rows
+}
+
+pub fn areas(area: Rect) -> Areas {
+    areas_for(area, Kind::Http)
+}
+
+/// The regions of the layout the center panel has for `kind`.
+pub fn areas_for(area: Rect, kind: Kind) -> Areas {
+    let (main, _) = main_area(area);
+    let [left, center, right] = panel_areas(main);
+    let (requests, logs) = left_split(left);
+    let (tabs, list) = left_areas(requests);
+    let center = center_areas(center, kind);
+    let (response, _, response_body) = right_areas(right);
+    Areas {
+        tabs,
+        list,
+        logs,
+        method: center.method,
+        url: center.url,
+        schema: center.schema,
+        rpc: center.rpc,
+        body: center.body,
+        response,
+        response_body,
+    }
+}
+
+/// The kind selector in the top border of the URL box, right-aligned.
+pub(crate) const KIND_LABEL: &str = " REST|gRPC|Connect|WS|GQL ";
+
+/// Which kind label sits under `at`: the selector is drawn in the top border of the URL
+/// box (`url` is its outer rect), right-aligned and one column short of the corner.
+pub fn kind_at(url: Rect, at: Position) -> Option<(Kind, Protocol)> {
+    if at.y != url.y {
+        return None;
+    }
+    let width = KIND_LABEL.len() as u16;
+    let start = url.right().checked_sub(1 + width)?;
+    let offset = at.x.checked_sub(start)?;
+    match offset {
+        o if o < 6 => Some((Kind::Http, Protocol::Grpc)),
+        o if o < 11 => Some((Kind::Grpc, Protocol::Grpc)),
+        o if o < 19 => Some((Kind::Grpc, Protocol::Connect)),
+        o if o < 22 => Some((Kind::Ws, Protocol::Grpc)),
+        o if o < width => Some((Kind::Graphql, Protocol::Grpc)),
+        _ => None,
+    }
+}
+
+pub(crate) const HISTORY_TAB_WIDTH: u16 = " History ".len() as u16;
+
+/// Which tab title sits under column `x` of the tab row. Matches `Tabs` default padding
+/// (one space each side of a title) and the one-column `|` divider.
+pub fn tab_at(tabs: Rect, x: u16) -> Option<Tab> {
+    let offset = x.checked_sub(tabs.x)?;
+    match offset {
+        o if o < HISTORY_TAB_WIDTH => Some(Tab::History),
+        o if o == HISTORY_TAB_WIDTH => None, // divider
+        _ => None,
+    }
+}
+
+/// First visible list row when `selected_row` must stay in view: the same rule `List`
+/// applies to a fresh state, set explicitly so clicks map to the rows that were drawn.
+pub fn list_offset(selected_row: Option<usize>, height: u16) -> usize {
+    selected_row.map_or(0, |row| (row + 1).saturating_sub(height as usize))
+}
+
+/// For each row of the Stored list, the template it shows (`None` for project headers).
+pub fn stored_row_map(app: &App) -> Vec<Option<usize>> {
+    let mut rows = Vec::new();
+    let mut last_project: Option<&str> = None;
+    for (i, t) in app.templates.iter().enumerate() {
+        if last_project != Some(t.project.as_str()) {
+            rows.push(None);
+            last_project = Some(&t.project);
+        }
+        rows.push(Some(i));
+    }
+    rows
+}
+
+/// Titles of the request's lower box, in order, each with the tab it selects: `" Body "`
+/// and `" Headers (n) "` (`" Metadata (n) "` for gRPC; `" Query "`, `" Variables "` and
+/// `" Headers (n) "` for GraphQL), joined by `|`.
+pub(crate) fn request_tab_labels(
+    count: usize,
+    kind: Kind,
+    panel: usize,
+) -> Vec<(RequestTab, String)> {
+    let name = match kind {
+        Kind::Grpc => "Metadata",
+        _ => "Headers",
+    };
+    let second = if count == 0 {
+        format!(" {name} ")
+    } else {
+        format!(" {name} ({count}) ")
+    };
+    match kind {
+        Kind::Graphql => vec![
+            (RequestTab::Body, format!(" [{panel}] Query ")),
+            (RequestTab::Variables, " Variables ".to_owned()),
+            (RequestTab::Headers, second),
+        ],
+        _ => vec![
+            (RequestTab::Body, format!(" [{panel}] Body ")),
+            (RequestTab::Headers, second),
+        ],
+    }
+}
+
+/// Which request tab title is under `at`; titles sit on the box's top border, starting
+/// one column in. `header_count` must be the count shown in the title.
+pub fn request_tab_at(
+    body: Rect,
+    at: Position,
+    header_count: usize,
+    kind: Kind,
+    panel: usize,
+) -> Option<RequestTab> {
+    if at.y != body.y {
+        return None;
+    }
+    let mut offset = at.x.checked_sub(body.x + 1)? as usize;
+    for (tab, label) in request_tab_labels(header_count, kind, panel) {
+        if offset < label.len() {
+            return Some(tab);
+        }
+        // the `|` between two titles belongs to neither
+        offset = offset.checked_sub(label.len() + 1)?;
+    }
+    None
+}
+
+/// Scroll offsets (rows, columns) that keep the cursor inside `area`.
+pub fn editor_scroll(cursor: (usize, usize), area: Rect) -> (usize, usize) {
+    (
+        cursor
+            .0
+            .saturating_sub((area.height as usize).saturating_sub(1)),
+        cursor
+            .1
+            .saturating_sub((area.width as usize).saturating_sub(1)),
+    )
+}
+
+/// The inputs of one header row.
+#[derive(Debug, Clone, Copy)]
+pub struct HeaderCells {
+    pub row: usize,
+    pub name: Rect,
+    pub value: Rect,
+}
+
+/// Where the header rows are drawn inside the request box.
+pub struct HeaderGrid {
+    pub rows: Vec<HeaderCells>,
+    /// The "add header" line, when it is in view.
+    pub add: Option<Rect>,
+}
+
+/// Lays out `count` header rows (name and value side by side, split by a `:`) followed by
+/// an "add header" line, scrolled so that `selected` is in view.
+pub fn header_grid(inner: Rect, count: usize, selected: usize) -> HeaderGrid {
+    let height = inner.height as usize;
+    let offset = list_offset(Some(selected), inner.height);
+    let name_width = (inner.width * 2 / 5).clamp(1, inner.width.saturating_sub(4).max(1));
+    let value_x = inner.x + name_width + 2;
+    let value_width = inner.right().saturating_sub(value_x);
+    let rows = (offset..count.min(offset + height))
+        .map(|row| {
+            let y = inner.y + (row - offset) as u16;
+            HeaderCells {
+                row,
+                name: Rect::new(inner.x, y, name_width, 1),
+                value: Rect::new(value_x, y, value_width, 1),
+            }
+        })
+        .collect();
+    let add = (count >= offset && count < offset + height)
+        .then(|| Rect::new(inner.x, inner.y + (count - offset) as u16, inner.width, 1));
+    HeaderGrid { rows, add }
+}
