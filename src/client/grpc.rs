@@ -18,6 +18,7 @@ use super::Header;
 
 pub use codec::{DynamicCodec, message_to_json, parse_body};
 pub use connect::connect;
+pub(crate) use connect::install_crypto_provider;
 pub use fake::{FakeGrpc, FakeStep};
 pub use load::load_schema_file;
 pub use reflection::reflect;

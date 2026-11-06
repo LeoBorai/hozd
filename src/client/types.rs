@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::ClientError;
 use super::grpc::{GrpcOutcome, GrpcRequest};
+use super::ws::{WsOutcome, WsRequest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "UPPERCASE")]
@@ -111,6 +112,7 @@ pub struct HttpResponse {
 pub enum Request {
     Http(HttpRequest),
     Grpc(GrpcRequest),
+    Ws(WsRequest),
 }
 
 impl Request {
@@ -118,6 +120,7 @@ impl Request {
         match self {
             Request::Http(_) => Kind::Http,
             Request::Grpc(_) => Kind::Grpc,
+            Request::Ws(_) => Kind::Ws,
         }
     }
 }
@@ -125,6 +128,12 @@ impl Request {
 impl From<HttpRequest> for Request {
     fn from(r: HttpRequest) -> Self {
         Request::Http(r)
+    }
+}
+
+impl From<WsRequest> for Request {
+    fn from(r: WsRequest) -> Self {
+        Request::Ws(r)
     }
 }
 
@@ -143,6 +152,8 @@ pub enum Outcome {
     Error(String),
     /// A gRPC call, including calls that failed before reaching the server.
     Grpc(GrpcOutcome),
+    /// A WebSocket session, including one that never connected.
+    Ws(WsOutcome),
 }
 
 impl From<Result<HttpResponse, ClientError>> for Outcome {
@@ -160,6 +171,7 @@ pub enum Kind {
     #[default]
     Http,
     Grpc,
+    Ws,
 }
 
 impl Kind {
@@ -167,6 +179,7 @@ impl Kind {
         match self {
             Kind::Http => "http",
             Kind::Grpc => "grpc",
+            Kind::Ws => "ws",
         }
     }
 }
@@ -178,6 +191,7 @@ impl FromStr for Kind {
         match s {
             "http" => Ok(Kind::Http),
             "grpc" => Ok(Kind::Grpc),
+            "ws" => Ok(Kind::Ws),
             other => Err(format!("unknown request kind `{other}`")),
         }
     }

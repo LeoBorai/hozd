@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::client::{
     GrpcOutcome, GrpcRequest, GrpcStatus, Header, HttpRequest, HttpResponse, Kind, Method, Outcome,
-    Protocol, Request, SchemaSource,
+    Protocol, Request, SchemaSource, WsClose, WsMessage, WsOutcome, WsRequest,
 };
 
 /// Bodies larger than this are truncated before being stored.
@@ -102,6 +102,7 @@ impl History {
             (Request::Http(req), Outcome::Response(res)) => http_row(req, Some(res), None),
             (Request::Http(req), Outcome::Error(msg)) => http_row(req, None, Some(msg)),
             (Request::Grpc(req), Outcome::Grpc(out)) => grpc_row(req, out),
+            (Request::Ws(req), Outcome::Ws(out)) => ws_row(req, out),
             _ => return Err(HistoryError::KindMismatch),
         };
         let now = now_ms();
@@ -219,6 +220,25 @@ impl History {
                 });
                 (request, outcome)
             }
+            Kind::Ws => {
+                let extra: WsExtra =
+                    serde_json::from_str(r.response_body.as_deref().unwrap_or("{}"))
+                        .map_err(|e| corrupt(e.to_string()))?;
+                let request = Request::Ws(WsRequest {
+                    url: r.url,
+                    headers: headers(&r.request_headers)?,
+                    body: r.request_body,
+                });
+                let outcome = Outcome::Ws(WsOutcome {
+                    connected: r.status.is_some(),
+                    headers: headers(r.response_headers.as_deref().unwrap_or("[]"))?,
+                    messages: extra.messages,
+                    close: extra.close,
+                    error: r.error,
+                    elapsed,
+                });
+                (request, outcome)
+            }
         };
 
         Ok(Some(HistoryEntry {
@@ -252,6 +272,19 @@ struct GrpcExtra {
     truncated: bool,
 }
 
+/// Everything about a WebSocket session that the shared columns cannot hold; stored as the
+/// JSON `response_body`. The status column is 101 when the handshake succeeded.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct WsExtra {
+    #[serde(default)]
+    messages: Vec<WsMessage>,
+    #[serde(default)]
+    close: Option<WsClose>,
+    /// Messages were dropped to stay under [`MAX_BODY_BYTES`].
+    #[serde(default)]
+    truncated: bool,
+}
+
 /// A history row before insertion, whichever the kind.
 struct Row<'a> {
     kind: Kind,
@@ -261,7 +294,7 @@ struct Row<'a> {
     request_body: Option<&'a str>,
     status: Option<i64>,
     response_headers: Option<String>,
-    response_body: Option<&'a str>,
+    response_body: Option<String>,
     elapsed_ms: Option<i64>,
     error: Option<&'a str>,
     grpc: Option<String>,
@@ -281,7 +314,7 @@ fn http_row<'a>(
         status: response.map(|r| i64::from(r.status)),
         response_headers: response
             .map(|r| serde_json::to_string(&r.headers).expect("headers serialize")),
-        response_body: response.map(|r| cap(&r.body)),
+        response_body: response.map(|r| cap(&r.body).to_owned()),
         elapsed_ms: response.map(|r| r.elapsed.as_millis() as i64),
         error: error.map(String::as_str),
         grpc: None,
@@ -333,6 +366,39 @@ fn grpc_row<'a>(request: &'a GrpcRequest, outcome: &'a GrpcOutcome) -> Row<'a> {
         elapsed_ms: Some(outcome.elapsed.as_millis() as i64),
         error: outcome.error.as_deref(),
         grpc: Some(serde_json::to_string(&extra).expect("extra serializes")),
+    }
+}
+
+fn ws_row<'a>(request: &'a WsRequest, outcome: &'a WsOutcome) -> Row<'a> {
+    // Keep messages until the total reaches the cap; later ones are dropped.
+    let mut kept = Vec::new();
+    let mut size = 0;
+    let mut truncated = false;
+    for message in &outcome.messages {
+        if size + message.text.len() > MAX_BODY_BYTES {
+            truncated = true;
+            break;
+        }
+        size += message.text.len();
+        kept.push(message.clone());
+    }
+    let extra = WsExtra {
+        messages: kept,
+        close: outcome.close.clone(),
+        truncated,
+    };
+    Row {
+        kind: Kind::Ws,
+        method: "WS".to_owned(),
+        url: &request.url,
+        request_headers: serde_json::to_string(&request.headers).expect("headers serialize"),
+        request_body: request.body.as_deref().map(cap),
+        status: outcome.connected.then_some(101),
+        response_headers: Some(serde_json::to_string(&outcome.headers).expect("headers serialize")),
+        response_body: Some(serde_json::to_string(&extra).expect("extra serializes")),
+        elapsed_ms: Some(outcome.elapsed.as_millis() as i64),
+        error: outcome.error.as_deref(),
+        grpc: None,
     }
 }
 

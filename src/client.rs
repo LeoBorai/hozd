@@ -11,6 +11,10 @@ pub use grpc::{
 pub use http::ReqwestClient;
 pub use trace::{Trace, trace_certificate, trace_resolve};
 pub use types::{Header, HttpRequest, HttpResponse, Kind, Method, Outcome, Request};
+pub use ws::{
+    SharedWs, TungsteniteWs, WsClient, WsClose, WsDirection, WsEvent, WsMessage, WsOutcome,
+    WsRequest, WsSession,
+};
 
 pub mod grpc;
 
@@ -18,6 +22,7 @@ mod fake;
 mod http;
 mod trace;
 mod types;
+mod ws;
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum ClientError {
