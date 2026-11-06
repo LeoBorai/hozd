@@ -32,6 +32,10 @@ skip = [
     { crate = "synstructure@0.13.2", reason = "asn1-rs-derive (x509-parser) still uses 0.13; yoke-derive uses 0.14" },
     { crate = "unicode-width@0.1.14", reason = "miette still uses 0.1; ratatui uses 0.2" },
     { crate = "windows-sys@0.52.0", reason = "ring still uses 0.52; the rest use 0.61" },
+    { crate = "block-buffer@0.10.4", reason = "sha2 (sqlx-core) still uses 0.10; sha1 (tungstenite) uses 0.12" },
+    { crate = "cpufeatures@0.2.17", reason = "sha2 (sqlx-core) still uses 0.2; sha1 and chacha20 (tungstenite) use 0.3" },
+    { crate = "crypto-common@0.1.6", reason = "digest 0.10 (sha2, sqlx-core) still uses 0.1; digest 0.11 (tungstenite) uses 0.2" },
+    { crate = "digest@0.10.7", reason = "sha2 (sqlx-core) still uses 0.10; sha1 (tungstenite) uses 0.11" },
     { crate = "syn@2.0.119", reason = "sqlx-macros and other proc-macros still use syn 2; others use 3" },
 ]
 
