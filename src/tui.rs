@@ -12,6 +12,7 @@ pub use app::{
 };
 pub use terminal::{RestoreGuard, osc52};
 
+pub mod auth;
 pub mod commands;
 pub mod complete;
 pub mod headers;

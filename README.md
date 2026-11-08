@@ -161,7 +161,8 @@ proto_include = ["~/work/protos"]
 | `1`..`9`          | Same, but only outside text fields |
 | `Ctrl+N`          | New request: clear the form (refused while a request runs; `Ctrl+X` first) |
 | `Ctrl+P`          | Previous HTTP method (REST); open the method / operation picker (gRPC, GraphQL) |
-| `Ctrl+T`          | Switch the request box between Body and Headers (Metadata in gRPC) |
+| `Ctrl+T`          | Switch the request box between Body and Headers (Metadata in gRPC); REST also has URL Params and Auth |
+| `Ctrl+R`          | Auth tab: switch scheme (None, Basic, JWT, Free text)              |
 | `Ctrl+G`          | Cycle the request between REST, gRPC, Connect, WebSocket and GraphQL |
 | `Ctrl+Y`          | REST: next body type (also a click on the type shown on the Body box's border) |
 | Drag (reading panel) | Select text; it is copied to the clipboard on release (`y` copies the selection, or everything if none) |

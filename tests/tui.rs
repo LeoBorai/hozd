@@ -852,6 +852,14 @@ async fn ctrl_t_toggles_between_body_and_headers() {
     h.app.handle_key(ctrl('t'));
     assert_eq!(
         (h.app.request_tab, h.app.focus),
+        (RequestTab::Auth, Focus::Auth)
+    );
+    let out = text(&render(&h.app, 120, 30));
+    assert!(out.contains("Auth"), "{out}");
+
+    h.app.handle_key(ctrl('t'));
+    assert_eq!(
+        (h.app.request_tab, h.app.focus),
         (RequestTab::Body, Focus::Body)
     );
 }
@@ -986,6 +994,7 @@ async fn invalid_header_line_blocks_send_and_points_at_the_line() {
     type_text(&mut h.app, "bad name"); // a space is not allowed in a name
     h.app.handle_key(key(KeyCode::Tab)); // leave the editor
     h.app.handle_key(key(KeyCode::Tab));
+    h.app.handle_key(ctrl('t'));
     h.app.handle_key(ctrl('t'));
     h.app.handle_key(ctrl('t')); // back to Body to prove the failure switches tabs
     assert_eq!(h.app.request_tab, RequestTab::Body);
@@ -3119,4 +3128,164 @@ async fn long_url_params_are_not_hidden() {
     assert!(out.contains('…'), "{out}");
     // the HTTP view wraps instead of cutting, so the whole value is readable
     assert!(out.contains("and_on_forever_and_ever&e=5"), "{out}");
+}
+
+const JWT: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0.KMUFsIDTnFmyG3nMiGM6H9FNFUROf3wh7SmqJp-QV30";
+
+/// Opens the Auth tab of an empty REST request (Body, Headers, Params, Auth).
+async fn on_auth_tab() -> Harness {
+    let mut h = harness().await;
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "http://example.com");
+    h.app.handle_key(key(KeyCode::Tab));
+    for _ in 0..3 {
+        h.app.handle_key(ctrl('t'));
+    }
+    assert_eq!(
+        (h.app.request_tab, h.app.focus),
+        (RequestTab::Auth, Focus::Auth)
+    );
+    h
+}
+
+fn authorization(h: &Harness) -> Option<String> {
+    h.app
+        .try_request()
+        .unwrap()
+        .headers
+        .into_iter()
+        .find(|h| h.name == "Authorization")
+        .map(|h| h.value)
+}
+
+#[tokio::test]
+async fn basic_auth_adds_an_authorization_header() {
+    let mut h = on_auth_tab().await;
+    assert_eq!(authorization(&h), None);
+    h.app.handle_key(ctrl('r'));
+    type_text(&mut h.app, "Aladdin");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "open sesame");
+    assert_eq!(
+        authorization(&h).as_deref(),
+        Some("Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==")
+    );
+    let out = text(&render(&h.app, 120, 40));
+    assert!(out.contains("Auth (Basic)"), "{out}");
+    assert!(out.contains("Headers |"), "{out}");
+    assert!(
+        out.contains("Authorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ=="),
+        "{out}"
+    );
+}
+
+#[tokio::test]
+async fn free_text_authorization_is_sent_as_typed() {
+    let mut h = on_auth_tab().await;
+    h.app.handle_key(ctrl('r'));
+    h.app.handle_key(ctrl('r'));
+    h.app.handle_key(ctrl('r'));
+    type_text(&mut h.app, "Digest abc");
+    assert_eq!(authorization(&h).as_deref(), Some("Digest abc"));
+}
+
+#[tokio::test]
+async fn a_jwt_is_decoded_and_verified_locally() {
+    let mut h = on_auth_tab().await;
+    h.app.handle_key(ctrl('r'));
+    h.app.handle_key(ctrl('r'));
+    // prefix, then the token
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, JWT);
+    assert_eq!(authorization(&h), Some(format!("Bearer {JWT}")));
+    let out = text(&render(&h.app, 140, 40));
+    assert!(out.contains("Decoded Header"), "{out}");
+    assert!(out.contains("\"alg\": \"HS256\""), "{out}");
+    assert!(out.contains("\"name\": \"John Doe\""), "{out}");
+    assert!(out.contains("✓ Valid JWT"), "{out}");
+    assert!(!out.contains("✓ Signature Verified"), "{out}");
+
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "wrong");
+    let out = text(&render(&h.app, 140, 40));
+    assert!(out.contains("✗ Invalid secret"), "{out}");
+
+    for _ in 0..5 {
+        h.app.handle_key(key(KeyCode::Backspace));
+    }
+    type_text(&mut h.app, "a-string-secret-at-least-256-bits-long");
+    let out = text(&render(&h.app, 140, 40));
+    assert!(out.contains("✓ Signature Verified"), "{out}");
+    assert!(out.contains("✓ Valid secret"), "{out}");
+}
+
+#[tokio::test]
+async fn an_invalid_jwt_is_reported_but_still_sent() {
+    let mut h = on_auth_tab().await;
+    h.app.handle_key(ctrl('r'));
+    h.app.handle_key(ctrl('r'));
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "not-a-jwt");
+    assert_eq!(authorization(&h).as_deref(), Some("Bearer not-a-jwt"));
+    let out = text(&render(&h.app, 140, 40));
+    assert!(out.contains("✗ Invalid JWT"), "{out}");
+}
+
+#[tokio::test]
+async fn the_jwt_is_colored_by_part() {
+    let mut h = on_auth_tab().await;
+    h.app.handle_key(ctrl('r'));
+    h.app.handle_key(ctrl('r'));
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, JWT);
+    let buf = render(&h.app, 200, 45);
+    let color_of = |needle: &str| {
+        let out = text(&buf);
+        let line = out.lines().position(|l| l.contains(needle)).unwrap();
+        let col = out.lines().nth(line).unwrap().find(needle).unwrap();
+        let col = out.lines().nth(line).unwrap()[..col].chars().count();
+        buf[(col as u16, line as u16)].fg
+    };
+    assert_eq!(color_of("eyJhbGci"), Color::Magenta);
+    assert_eq!(color_of("MjM0NTY3"), Color::Rgb(160, 110, 255));
+    assert_eq!(color_of("KMUFsIDT"), Color::Cyan);
+}
+
+#[tokio::test]
+async fn a_stored_authorization_header_moves_into_the_auth_tab() {
+    let mut h = harness().await;
+    h.app.load_request(&Request::Http(HttpRequest {
+        url: "http://example.com".into(),
+        headers: vec![
+            Header::new("authorization", "Basic dTpw"),
+            Header::new("x-a", "1"),
+        ],
+        ..Default::default()
+    }));
+    let req = h.app.try_request().unwrap();
+    assert_eq!(
+        req.headers,
+        vec![
+            Header::new("x-a", "1"),
+            Header::new("Authorization", "Basic dTpw")
+        ]
+    );
+    assert_eq!(
+        h.app.headers.parse().unwrap(),
+        vec![Header::new("x-a", "1")]
+    );
+}
+
+#[tokio::test]
+async fn a_header_typed_in_the_headers_tab_wins_over_the_auth_tab() {
+    let mut h = harness().await;
+    h.app.load_request(&Request::Http(HttpRequest {
+        url: "http://example.com".into(),
+        headers: vec![Header::new("authorization", "Basic dTpw")],
+        ..Default::default()
+    }));
+    h.app.headers =
+        hozd::tui::headers::HeaderEditor::from_headers(&[Header::new("Authorization", "Token x")]);
+    let req = h.app.try_request().unwrap();
+    assert_eq!(req.headers, vec![Header::new("Authorization", "Token x")]);
 }

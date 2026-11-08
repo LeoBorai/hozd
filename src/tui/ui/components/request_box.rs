@@ -28,11 +28,12 @@ pub(crate) fn draw_request_box(
 ) {
     let lower_focused = matches!(
         app.focus,
-        Focus::Body | Focus::Variables | Focus::Headers | Focus::Params
+        Focus::Body | Focus::Variables | Focus::Headers | Focus::Params | Focus::Auth
     );
     let labels = request_tab_labels(
-        request.headers.len(),
+        app.headers_count(request, previewing),
         app.params_count(request, previewing),
+        app.auth_label(request, previewing),
         request.kind,
         app.panels()
             .iter()
@@ -106,6 +107,18 @@ pub(crate) fn draw_request_box(
                 .collect();
             frame.render_widget(Paragraph::new(lines), body_inner);
         }
+        (RequestTab::Auth, true) => {
+            let value = request
+                .headers
+                .iter()
+                .find(|h| h.name.eq_ignore_ascii_case("authorization"))
+                .map_or_else(
+                    || "no authorization".to_owned(),
+                    |h| format!("Authorization: {}", h.value),
+                );
+            frame.render_widget(Paragraph::new(value), body_inner);
+        }
+        (RequestTab::Auth, false) => draw_auth(frame, app, body_inner),
         (RequestTab::Params, false) => draw_pair_rows(
             frame,
             &app.params,
