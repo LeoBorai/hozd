@@ -2,6 +2,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+pub use body::{
+    Body, BodyError, BodyKind, Encoded, Field, JsonValue, Part, PartValue, expand_home,
+};
 pub use fake::FakeClient;
 pub use graphql::{
     GraphqlOperation, GraphqlRequest, GraphqlSchema, OperationKind, introspection_request,
@@ -21,6 +24,7 @@ pub use ws::{
 
 pub mod grpc;
 
+mod body;
 mod common;
 mod fake;
 mod graphql;
@@ -35,6 +39,8 @@ pub enum ClientError {
     InvalidUrl(String),
     #[error("request failed: {0}")]
     Transport(String),
+    #[error("invalid body: {0}")]
+    Body(String),
 }
 
 /// Executes an HTTP request and reports the outcome. Callers hold an `Arc<dyn HttpClient>`.

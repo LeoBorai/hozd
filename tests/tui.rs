@@ -303,7 +303,10 @@ async fn building_a_request_highlights_json_body() {
 
     let req = h.app.editor_request();
     assert_eq!((req.method, req.url.as_str()), (Method::Post, "http://x/y"));
-    assert_eq!(req.body.as_deref(), Some("{\"a\": 1}"));
+    assert_eq!(
+        req.body.as_ref().and_then(hozd::client::Body::as_text),
+        Some("{\"a\": 1}")
+    );
 
     let buf = render(&h.app, 120, 30);
     let styled = |sym: &str, color: Color| {
@@ -454,7 +457,10 @@ async fn enter_on_history_loads_request_into_editor() {
         (req.method, req.url.as_str()),
         (Method::Post, "http://x/second")
     );
-    assert_eq!(req.body.as_deref(), Some("{\"k\": true}"));
+    assert_eq!(
+        req.body.as_ref().and_then(hozd::client::Body::as_text),
+        Some("{\"k\": true}")
+    );
     assert!(h.fake.requests().is_empty());
 }
 
@@ -487,7 +493,7 @@ async fn enter_on_stored_template_loads_it_ready_to_send() {
     let req = app.editor_request();
     assert_eq!((req.method, req.url.as_str()), (Method::Put, "http://x/t"));
     assert_eq!(req.headers, vec![Header::new("X-A", "b")]);
-    assert!(req.body.unwrap().contains("\"a\": 1"));
+    assert!(req.body.unwrap().preview().contains("\"a\": 1"));
     assert!(!app.view().previewing);
 }
 
@@ -2674,4 +2680,318 @@ async fn clicking_contribute_opens_the_repository_left_of_the_version() {
         *OPENED.lock().unwrap(),
         ["https://github.com/LeoBorai/hozd"]
     );
+}
+
+// ---- body types ------------------------------------------------------------
+
+use hozd::client::{Body, BodyKind, Field, JsonValue, Part};
+
+fn alt(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::ALT)
+}
+
+/// A harness focused on the body editor of a REST request.
+async fn body_harness() -> Harness {
+    let mut h = harness().await;
+    h.app.handle_key(key(KeyCode::Tab)); // URL
+    type_text(&mut h.app, "http://x/y");
+    h.app.handle_key(key(KeyCode::Tab)); // Body
+    assert_eq!(h.app.focus, Focus::Body);
+    h
+}
+
+fn body_of(app: &App) -> Option<Body> {
+    app.editor_request().body
+}
+
+#[tokio::test]
+async fn ctrl_y_cycles_through_every_body_type() {
+    let mut h = body_harness().await;
+    assert_eq!(h.app.body_kind, BodyKind::JsonRaw);
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        h.app.handle_key(ctrl('y'));
+        seen.push(h.app.body_kind);
+    }
+    assert_eq!(
+        seen,
+        [
+            BodyKind::Form,
+            BodyKind::Multipart,
+            BodyKind::File,
+            BodyKind::Text,
+            BodyKind::Json,
+            BodyKind::JsonRaw
+        ]
+    );
+    assert!(text(&render(&h.app, 120, 29)).contains("JSON (RAW)"));
+}
+
+#[tokio::test]
+async fn text_body_is_plain_text() {
+    let mut h = body_harness().await;
+    h.app.set_body_kind(BodyKind::Text);
+    type_text(&mut h.app, "hello");
+    assert_eq!(body_of(&h.app), Some(Body::Text("hello".into())));
+}
+
+#[tokio::test]
+async fn json_fields_of_every_type_build_a_body() {
+    let mut h = body_harness().await;
+    h.app.set_body_kind(BodyKind::Json);
+    type_text(&mut h.app, "name");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "ada");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "age");
+    h.app.handle_key(key(KeyCode::Enter));
+    h.app.handle_key(ctrl('r')); // number
+    type_text(&mut h.app, "36");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "tags");
+    for _ in 0..5 {
+        h.app.handle_key(ctrl('r')); // string > number > boolean > null > object > array
+    }
+    h.app.handle_key(key(KeyCode::Enter)); // first item
+    type_text(&mut h.app, "x");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "y");
+    h.app.handle_key(key(KeyCode::Enter));
+    h.app.handle_key(alt(KeyCode::Left)); // leave the array
+    type_text(&mut h.app, "ok");
+    h.app.handle_key(key(KeyCode::Enter));
+    h.app.handle_key(ctrl('r'));
+    h.app.handle_key(ctrl('r')); // boolean
+    h.app.handle_key(key(KeyCode::Char(' '))); // true
+
+    assert_eq!(
+        h.app.try_request().unwrap().body,
+        Some(Body::Json(
+            JsonValue::parse(r#"{"name":"ada","age":36,"tags":["x","y"],"ok":true}"#).unwrap()
+        ))
+    );
+    let out = text(&render(&h.app, 120, 29));
+    assert!(
+        out.contains("tags") && out.contains("array") && out.contains("boolean"),
+        "{out}"
+    );
+}
+
+#[tokio::test]
+async fn an_invalid_json_number_blocks_sending() {
+    let mut h = body_harness().await;
+    h.app.set_body_kind(BodyKind::Json);
+    type_text(&mut h.app, "n");
+    h.app.handle_key(key(KeyCode::Enter));
+    h.app.handle_key(ctrl('r'));
+    type_text(&mut h.app, "oops");
+    h.app.handle_key(ctrl('s'));
+    assert!(
+        h.app
+            .status
+            .as_deref()
+            .unwrap_or_default()
+            .contains("not a number")
+    );
+    assert!(h.fake.requests().is_empty());
+}
+
+#[tokio::test]
+async fn switching_between_json_fields_and_raw_json_keeps_the_document() {
+    let mut h = body_harness().await;
+    type_text(&mut h.app, r#"{"a": [1, 2]}"#);
+    h.app.set_body_kind(BodyKind::Json);
+    assert_eq!(
+        h.app.json.to_value(true).unwrap(),
+        JsonValue::parse(r#"{"a":[1,2]}"#).unwrap()
+    );
+    // edit the fields, then print them as text
+    h.app.set_body_kind(BodyKind::JsonRaw);
+    assert_eq!(h.app.body_text(), "{\n  \"a\": [\n    1,\n    2\n  ]\n}");
+}
+
+#[tokio::test]
+async fn form_rows_build_a_form_body() {
+    let mut h = body_harness().await;
+    h.app.set_body_kind(BodyKind::Form);
+    type_text(&mut h.app, "q");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "a b");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "n");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "1");
+    assert_eq!(
+        body_of(&h.app),
+        Some(Body::Form(vec![
+            Field::new("q", "a b"),
+            Field::new("n", "1")
+        ]))
+    );
+}
+
+#[tokio::test]
+async fn at_in_a_multipart_value_suggests_files_and_tab_accepts() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("photo.png"), "").unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "").unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    let root = dir.path().to_str().unwrap();
+
+    let mut h = body_harness().await;
+    h.app.set_body_kind(BodyKind::Multipart);
+    type_text(&mut h.app, "title");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "plain");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "pic");
+    h.app.handle_key(key(KeyCode::Enter));
+    assert!(h.app.suggestions.items.is_empty(), "no @, no menu");
+
+    type_text(&mut h.app, &format!("@{root}/p"));
+    let items: Vec<&str> = h
+        .app
+        .suggestions
+        .items
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect();
+    assert_eq!(items, [format!("@{root}/photo.png")]);
+    assert!(text(&render(&h.app, 120, 29)).contains("photo.png"));
+
+    h.app.handle_key(key(KeyCode::Tab));
+    assert!(h.app.suggestions.items.is_empty());
+    assert_eq!(
+        h.app.focus,
+        Focus::Body,
+        "Tab accepted instead of moving on"
+    );
+
+    assert_eq!(
+        body_of(&h.app),
+        Some(Body::Multipart(vec![
+            Part::text("title", "plain"),
+            Part::file("pic", format!("{root}/photo.png")),
+        ]))
+    );
+}
+
+#[tokio::test]
+async fn a_directory_suggestion_opens_its_content() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/inner.bin"), "").unwrap();
+    let root = dir.path().to_str().unwrap();
+
+    let mut h = body_harness().await;
+    h.app.set_body_kind(BodyKind::File);
+    type_text(&mut h.app, &format!("@{root}/s"));
+    h.app.handle_key(key(KeyCode::Tab));
+    assert_eq!(h.app.file_text(), format!("@{root}/sub/"));
+    let items: Vec<&str> = h
+        .app
+        .suggestions
+        .items
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect();
+    assert_eq!(items, [format!("@{root}/sub/inner.bin")]);
+}
+
+#[tokio::test]
+async fn file_body_is_resolved_from_the_at_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("data.bin");
+    std::fs::write(&file, "x").unwrap();
+
+    let mut h = body_harness().await;
+    h.app.set_body_kind(BodyKind::File);
+    type_text(&mut h.app, &format!("@{}", file.display()));
+    assert_eq!(
+        h.app.try_request().unwrap().body,
+        Some(Body::File(file.display().to_string()))
+    );
+
+    // a path that does not exist is caught before sending
+    h.app.file = ratatui_textarea::TextArea::new(vec!["@/definitely/not/here".into()]);
+    h.app.handle_key(ctrl('s'));
+    assert!(
+        h.app
+            .status
+            .as_deref()
+            .unwrap_or_default()
+            .contains("cannot read")
+    );
+    assert!(h.fake.requests().is_empty());
+}
+
+#[tokio::test]
+async fn an_escaped_at_is_text() {
+    let mut h = body_harness().await;
+    h.app.set_body_kind(BodyKind::Multipart);
+    type_text(&mut h.app, "handle");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "@@ada");
+    assert!(h.app.suggestions.items.is_empty());
+    assert_eq!(
+        body_of(&h.app),
+        Some(Body::Multipart(vec![Part::text("handle", "@ada")]))
+    );
+}
+
+#[tokio::test]
+async fn loading_a_request_restores_its_body_type() {
+    let mut h = harness().await;
+    let bodies = [
+        Body::Text("t".into()),
+        Body::Json(JsonValue::parse(r#"{"a":{"b":[1]}}"#).unwrap()),
+        Body::JsonRaw("{ \"x\": 1 }".into()),
+        Body::Form(vec![Field::new("a", "b")]),
+        Body::Multipart(vec![Part::text("a", "@b"), Part::file("f", "/tmp/x.png")]),
+        Body::File("/tmp/x.bin".into()),
+    ];
+    for body in bodies {
+        h.app.load_request(&Request::Http(HttpRequest {
+            method: Method::Post,
+            url: "http://x".into(),
+            headers: vec![],
+            body: Some(body.clone()),
+        }));
+        assert_eq!(h.app.body_kind, body.kind());
+        assert_eq!(h.app.editor_request().body, Some(body));
+    }
+    h.app.new_request();
+    assert_eq!(h.app.body_kind, BodyKind::JsonRaw);
+    assert_eq!(h.app.editor_request().body, None);
+}
+
+#[tokio::test]
+async fn sending_a_form_hands_the_client_the_form_body() {
+    let mut h = body_harness().await;
+    h.app.set_body_kind(BodyKind::Form);
+    type_text(&mut h.app, "a");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "1");
+    h.app.handle_key(ctrl('s'));
+    pump(&mut h, |a| !a.sending).await;
+    assert_eq!(
+        h.fake.requests()[0].body,
+        Some(Body::Form(vec![Field::new("a", "1")]))
+    );
+}
+
+#[tokio::test]
+async fn clicking_the_body_type_title_cycles_it() {
+    let mut h = harness().await;
+    let a = ui::areas(SCREEN);
+    click(&mut h.app, a.body.right() - 4, a.body.y);
+    assert_eq!(h.app.body_kind, BodyKind::Form);
+}
+
+#[tokio::test]
+async fn ctrl_y_is_for_rest_only() {
+    let mut h = harness().await;
+    h.app.set_kind(hozd::client::Kind::Ws);
+    h.app.handle_key(ctrl('y'));
+    assert_eq!(h.app.body_kind, BodyKind::JsonRaw);
 }

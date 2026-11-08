@@ -10,6 +10,7 @@ pub enum Action {
     Cancel,
     ToggleKind,
     ToggleRequestTab,
+    NextBodyType,
     NewRequest,
     NextMethod,
     PrevMethod,
@@ -88,6 +89,12 @@ pub const COMMANDS: &[Command] = &[
         "Switch the request box between body and headers (GraphQL: query, variables, headers)",
         Action::ToggleRequestTab,
         None,
+    ),
+    cmd(
+        "<ctrl+y>",
+        "Next body type: text, JSON, raw JSON, form, multipart, file",
+        Action::NextBodyType,
+        Some(Kind::Http),
     ),
     cmd(
         "<ctrl+p>",

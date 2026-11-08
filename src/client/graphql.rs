@@ -48,7 +48,7 @@ impl GraphqlRequest {
             method: Method::Post,
             url: self.url.clone(),
             headers,
-            body: Some(self.payload()?),
+            body: Some(self.payload()?.into()),
         })
     }
 
@@ -573,7 +573,13 @@ mod tests {
         };
         let http = req.to_http().unwrap();
         assert_eq!(http.method, Method::Post);
-        let body: Value = serde_json::from_str(http.body.as_deref().unwrap()).unwrap();
+        let body: Value = serde_json::from_str(
+            http.body
+                .as_ref()
+                .and_then(crate::client::Body::as_text)
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(body, json!({"query": "{ a }", "variables": {"a": 1}}));
         assert!(
             http.headers

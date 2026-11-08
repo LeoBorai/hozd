@@ -6,13 +6,34 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Clear, List, ListItem, ListState};
 
-use crate::tui::app::App;
+use crate::client::BodyKind;
+use crate::tui::app::{App, SuggestTarget};
 
 use super::super::layout::*;
 use super::*;
 
 /// The most suggestion rows shown at once.
 pub(crate) const SUGGESTION_ROWS: u16 = 6;
+
+/// The rect the suggestion list hangs under: the Schema box for the schema file, and the
+/// line of the `@file` input in the body box (`body` is its outer rect).
+pub fn suggestions_anchor(app: &App, schema: Rect, body: Rect) -> Rect {
+    if app.suggestions.target == SuggestTarget::Schema {
+        return schema;
+    }
+    let inner = inner(body);
+    let line = match app.body_kind {
+        BodyKind::Multipart => {
+            let grid = header_grid(inner, app.multipart.rows.len(), app.multipart.row);
+            grid.rows
+                .iter()
+                .find(|c| c.row == app.multipart.row)
+                .map_or(inner.y, |c| c.value.y)
+        }
+        _ => inner.y,
+    };
+    Rect::new(body.x, line, body.width, 1)
+}
 
 /// The suggestion list: right under the Schema box (`schema` is its outer rect), as wide
 /// as it, over whatever is below.
@@ -32,9 +53,9 @@ pub(crate) fn tail(text: &str, width: usize) -> String {
     format!("…{kept}")
 }
 
-pub(crate) fn draw_suggestions(frame: &mut Frame, app: &App, schema: Rect) {
+pub(crate) fn draw_suggestions(frame: &mut Frame, app: &App, anchor: Rect) {
     let items = &app.suggestions.items;
-    let area = suggestions_area(schema, items.len());
+    let area = suggestions_area(anchor, items.len());
     let area = area.intersection(frame.area());
     if area.height < 3 {
         return;

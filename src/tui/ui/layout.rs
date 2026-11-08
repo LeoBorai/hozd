@@ -2,7 +2,7 @@
 
 use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
 
-use crate::client::{Kind, Protocol};
+use crate::client::{BodyKind, Kind, Protocol};
 use crate::tui::app::{App, RequestTab, Tab};
 
 /// Left, center and right panels on a 12-column grid: 3-6-3.
@@ -303,6 +303,18 @@ pub fn request_tab_at(
     None
 }
 
+/// The body type shown on the right of the request box's top border, e.g. `" JSON (RAW) "`.
+pub fn body_kind_title(kind: BodyKind) -> String {
+    format!(" {kind} ")
+}
+
+/// Whether `at` is on the body type title of the request box (`body` is its outer rect).
+pub fn body_kind_title_at(body: Rect, at: Position, kind: BodyKind) -> bool {
+    let width = body_kind_title(kind).len() as u16;
+    // the title ends one column before the corner
+    at.y == body.y && at.x >= body.right().saturating_sub(width + 1) && at.x < body.right() - 1
+}
+
 /// Scroll offsets (rows, columns) that keep the cursor inside `area`.
 pub fn editor_scroll(cursor: (usize, usize), area: Rect) -> (usize, usize) {
     (
@@ -351,4 +363,51 @@ pub fn header_grid(inner: Rect, count: usize, selected: usize) -> HeaderGrid {
     let add = (count >= offset && count < offset + height)
         .then(|| Rect::new(inner.x, inner.y + (count - offset) as u16, inner.width, 1));
     HeaderGrid { rows, add }
+}
+
+/// The inputs of one JSON field row.
+#[derive(Debug, Clone, Copy)]
+pub struct JsonCells {
+    pub row: usize,
+    pub key: Rect,
+    pub value: Rect,
+    /// The row's type, at the right edge.
+    pub tag: Rect,
+}
+
+/// Where the JSON field rows are drawn inside the request box.
+pub struct JsonGrid {
+    pub rows: Vec<JsonCells>,
+    /// The line of key hints under the last row, when it is in view.
+    pub hint: Option<Rect>,
+}
+
+/// Width of the type column of a JSON row: the longest type name and a space.
+const JSON_TAG_WIDTH: u16 = 8;
+
+/// Lays out the rows of a JSON editor: the key (indented by depth), a `:`, the value and
+/// the type, scrolled so that `selected` is in view. `depths` has one entry per row.
+pub fn json_grid(inner: Rect, depths: &[usize], selected: usize) -> JsonGrid {
+    let height = inner.height as usize;
+    let offset = list_offset(Some(selected), inner.height);
+    let key_width = (inner.width / 3).max(6);
+    let rows = (offset..depths.len().min(offset + height))
+        .map(|row| {
+            let y = inner.y + (row - offset) as u16;
+            let x = (inner.x + (depths[row] * 2) as u16).min(inner.right().saturating_sub(1));
+            let key = Rect::new(x, y, key_width.min(inner.right() - x), 1);
+            let value_x = (key.right() + 2).min(inner.right());
+            let tag_x = inner.right().saturating_sub(JSON_TAG_WIDTH).max(value_x);
+            JsonCells {
+                row,
+                key,
+                value: Rect::new(value_x, y, tag_x.saturating_sub(value_x + 1), 1),
+                tag: Rect::new(tag_x, y, inner.right() - tag_x, 1),
+            }
+        })
+        .collect();
+    let count = depths.len();
+    let hint = (count >= offset && count < offset + height)
+        .then(|| Rect::new(inner.x, inner.y + (count - offset) as u16, inner.width, 1));
+    JsonGrid { rows, hint }
 }

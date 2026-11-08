@@ -11,10 +11,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::{
-    CallEvent, CallKind, GraphqlOperation, GraphqlRequest, GraphqlSchema, GrpcOutcome, GrpcRequest,
-    GrpcStatus, Header, HttpRequest, Kind, Method, OperationKind, Protocol, Request, Schema,
-    SchemaSource, SharedGrpc, SharedHttp, SharedWs, Trace, TungsteniteWs, WsEvent, WsOutcome,
-    WsRequest, introspect,
+    Body, BodyKind, CallEvent, CallKind, Field, GraphqlOperation, GraphqlRequest, GraphqlSchema,
+    GrpcOutcome, GrpcRequest, GrpcStatus, Header, HttpRequest, JsonValue, Kind, Method,
+    OperationKind, Part, PartValue, Protocol, Request, Schema, SchemaSource, SharedGrpc,
+    SharedHttp, SharedWs, Trace, TungsteniteWs, WsEvent, WsOutcome, WsRequest, introspect,
 };
 use crate::history::{History, HistoryEntry, Outcome, Summary};
 use crate::project::{Loaded, Template};
@@ -22,6 +22,7 @@ use crate::project::{Loaded, Template};
 use super::commands::{Action, Command, commands_for};
 use super::complete::{self, Suggestion};
 use super::headers::{Col, HeaderEditor};
+use super::json_editor::{JsonCol, JsonEditor};
 use super::log::{Level, Log};
 use super::modal::Modal;
 use super::syntax_highlight::json::pretty;
@@ -181,7 +182,10 @@ pub struct RequestView {
     pub url: String,
     /// The headers, or the metadata for gRPC.
     pub headers: Vec<Header>,
+    /// The body as text, see [`Body::preview`].
     pub body: String,
+    /// What the body is; only HTTP requests have anything but raw JSON.
+    pub body_kind: BodyKind,
     /// The GraphQL variables; empty for other kinds.
     pub variables: String,
     pub grpc: GrpcView,
@@ -204,7 +208,8 @@ impl From<&HttpRequest> for RequestView {
             method: r.method,
             url: r.url.clone(),
             headers: r.headers.clone(),
-            body: r.body.clone().unwrap_or_default(),
+            body: r.body.as_ref().map(Body::preview).unwrap_or_default(),
+            body_kind: r.body.as_ref().map_or_else(BodyKind::default, Body::kind),
             variables: String::new(),
             grpc: GrpcView::default(),
         }
@@ -221,6 +226,7 @@ impl From<&Request> for RequestView {
                 url: r.address.clone(),
                 headers: r.metadata.clone(),
                 body: r.body.clone().unwrap_or_default(),
+                body_kind: BodyKind::default(),
                 variables: String::new(),
                 grpc: GrpcView {
                     method: r.method.clone(),
@@ -235,6 +241,7 @@ impl From<&Request> for RequestView {
                 url: r.url.clone(),
                 headers: r.headers.clone(),
                 body: r.query.clone(),
+                body_kind: BodyKind::default(),
                 variables: r.variables.clone().unwrap_or_default(),
                 grpc: GrpcView::default(),
             },
@@ -244,6 +251,7 @@ impl From<&Request> for RequestView {
                 url: r.url.clone(),
                 headers: r.headers.clone(),
                 body: r.body.clone().unwrap_or_default(),
+                body_kind: BodyKind::default(),
                 variables: String::new(),
                 grpc: GrpcView::default(),
             },
@@ -261,9 +269,21 @@ pub struct View<'a> {
 /// The path suggestions of the schema file input.
 #[derive(Debug, Default)]
 pub struct Suggestions {
+    /// Which input the suggestions complete.
+    pub target: SuggestTarget,
     pub items: Vec<Suggestion>,
     /// The highlighted suggestion, once the user moved onto the list.
     pub sel: Option<usize>,
+}
+
+/// The input a list of suggestions completes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SuggestTarget {
+    /// The gRPC schema file.
+    #[default]
+    Schema,
+    /// An `@file` of the request body.
+    Body,
 }
 
 pub struct App {
@@ -278,7 +298,18 @@ pub struct App {
     pub method: Method,
     /// The URL; the server address in gRPC mode.
     pub url: TextArea<'static>,
+    /// The body text: free text or raw JSON in REST, the message in the other modes.
     pub body: TextArea<'static>,
+    /// What the REST body is.
+    pub body_kind: BodyKind,
+    /// The REST body when it is built field by field.
+    pub json: JsonEditor,
+    /// The REST body when it is a URL encoded form.
+    pub form: HeaderEditor,
+    /// The REST body when it is multipart; a value `@path` is a file.
+    pub multipart: HeaderEditor,
+    /// The REST body when it is a file: `@path`.
+    pub file: TextArea<'static>,
     /// One `Name: value` per line, see [`headers`].
     pub headers: HeaderEditor,
     pub request_tab: RequestTab,
@@ -382,6 +413,11 @@ impl App {
             method: Method::Get,
             url: single_line(""),
             body: TextArea::default(),
+            body_kind: BodyKind::default(),
+            json: JsonEditor::default(),
+            form: HeaderEditor::default(),
+            multipart: HeaderEditor::default(),
+            file: single_line(""),
             headers: HeaderEditor::default(),
             request_tab: RequestTab::Body,
             variables: TextArea::default(),
@@ -463,17 +499,111 @@ impl App {
 
     /// Like [`editor_request`](Self::editor_request) but fails on an invalid header line.
     pub fn try_request(&self) -> Result<HttpRequest, String> {
-        Ok(self.build_request(self.headers.parse()?))
+        let headers = self.headers.parse()?;
+        let body = self.build_body(true)?;
+        if let Some(body) = &body {
+            body.check().map_err(|e| e.to_string())?;
+        }
+        Ok(HttpRequest {
+            method: self.method,
+            url: self.url_text().trim().to_owned(),
+            headers,
+            body,
+        })
     }
 
     fn build_request(&self, headers: Vec<Header>) -> HttpRequest {
-        let body = self.body_text();
         HttpRequest {
             method: self.method,
             url: self.url_text().trim().to_owned(),
             headers,
-            body: (!body.is_empty()).then_some(body),
+            body: self.build_body(false).ok().flatten(),
         }
+    }
+
+    pub fn file_text(&self) -> String {
+        self.file.lines().join("")
+    }
+
+    /// The REST body as edited; `None` when there is nothing to send. With `strict`, a row
+    /// that cannot be sent is an error instead of being left out.
+    pub fn build_body(&self, strict: bool) -> Result<Option<Body>, String> {
+        let body = match self.body_kind {
+            BodyKind::Text => Body::Text(self.body_text()),
+            BodyKind::JsonRaw => Body::JsonRaw(self.body_text()),
+            BodyKind::Json => Body::Json(self.json.to_value(strict)?),
+            BodyKind::Form => Body::Form(
+                self.form
+                    .pairs(strict)?
+                    .into_iter()
+                    .map(|(name, value)| Field { name, value })
+                    .collect(),
+            ),
+            BodyKind::Multipart => Body::Multipart(
+                self.multipart
+                    .pairs(strict)?
+                    .into_iter()
+                    .map(|(name, value)| Part {
+                        name,
+                        value: PartValue::parse(&value),
+                    })
+                    .collect(),
+            ),
+            BodyKind::File => {
+                let text = self.file_text();
+                Body::File(text.strip_prefix('@').unwrap_or(&text).to_owned())
+            }
+        };
+        let empty = match &body {
+            Body::Json(_) => self.json.is_empty(),
+            other => other.is_empty(),
+        };
+        Ok((!empty).then_some(body))
+    }
+
+    /// Switches what the REST body is. Moving from the JSON fields to a text kind keeps
+    /// the document as text; moving from raw JSON to the fields keeps it as fields when it
+    /// is an object or an array.
+    pub fn set_body_kind(&mut self, kind: BodyKind) {
+        if kind == self.body_kind {
+            return;
+        }
+        match (self.body_kind, kind) {
+            (BodyKind::Json, BodyKind::JsonRaw | BodyKind::Text) if !self.json.is_empty() => {
+                if let Ok(value) = self.json.to_value(false) {
+                    let text = value.to_json_pretty();
+                    self.body = TextArea::new(text.lines().map(str::to_owned).collect());
+                }
+            }
+            (BodyKind::JsonRaw | BodyKind::Text, BodyKind::Json) => {
+                let text = self.body_text();
+                if let Some(json) = JsonValue::parse(&text)
+                    .ok()
+                    .and_then(|v| JsonEditor::from_value(&v))
+                {
+                    self.json = json;
+                } else if !text.trim().is_empty() {
+                    self.notice =
+                        Some("the body is not a JSON object or array; kept as text".into());
+                }
+            }
+            _ => {}
+        }
+        self.body_kind = kind;
+        if self.focus == Focus::Body {
+            self.refresh_suggestions();
+        }
+    }
+
+    /// Selects the next body kind (REST only).
+    pub fn next_body_kind(&mut self) {
+        if self.kind != Kind::Http {
+            self.notice = Some("body types are for REST requests".into());
+            return;
+        }
+        self.set_body_kind(self.body_kind.next());
+        self.notice = Some(format!("body: {}", self.body_kind));
+        self.set_request_tab(RequestTab::Body);
     }
 
     pub fn schema_path_text(&self) -> String {
@@ -597,7 +727,10 @@ impl App {
     /// The editor's request, of the kind the editor is in.
     pub fn editor_view(&self) -> RequestView {
         match self.kind {
-            Kind::Http => (&self.editor_request()).into(),
+            Kind::Http => RequestView {
+                body_kind: self.body_kind,
+                ..(&self.editor_request()).into()
+            },
             Kind::Grpc => (&Request::Grpc(self.editor_grpc_request())).into(),
             Kind::Ws => (&Request::Ws(self.editor_ws_request())).into(),
             Kind::Graphql => (&Request::Graphql(self.editor_graphql_request())).into(),
@@ -842,7 +975,7 @@ impl App {
             }
         }
 
-        if self.focus == Focus::Schema && self.suggestions_open() && self.suggestion_key(key.code) {
+        if self.suggestions_open() && self.suggestion_key(key.code) {
             return;
         }
 
@@ -855,6 +988,7 @@ impl App {
             }
             (KeyCode::Char('p'), true) if self.kind == Kind::Http => Some(Action::PrevMethod),
             (KeyCode::Char('t'), true) => Some(Action::ToggleRequestTab),
+            (KeyCode::Char('y'), true) if self.kind == Kind::Http => Some(Action::NextBodyType),
             (KeyCode::Char('g'), true) => Some(Action::ToggleKind),
             (KeyCode::Char('l'), true) if matches!(self.kind, Kind::Grpc | Kind::Graphql) => {
                 Some(Action::LoadSchema)
@@ -887,9 +1021,7 @@ impl App {
                     self.url.input(Input::from(key));
                 }
             },
-            Focus::Body => {
-                self.body.input(Input::from(key));
-            }
+            Focus::Body => self.body_key(key),
             Focus::Variables => {
                 self.variables.input(Input::from(key));
             }
@@ -902,6 +1034,27 @@ impl App {
         }
     }
 
+    /// Keys typed in the body editor, which depends on the body kind.
+    fn body_key(&mut self, key: KeyEvent) {
+        if self.kind != Kind::Http {
+            self.body.input(Input::from(key));
+            return;
+        }
+        match self.body_kind {
+            BodyKind::Text | BodyKind::JsonRaw => {
+                self.body.input(Input::from(key));
+            }
+            BodyKind::Json => self.json.key(key),
+            BodyKind::Form => self.form.key(key),
+            BodyKind::Multipart => self.multipart.key(key),
+            BodyKind::File => {
+                if key.code != KeyCode::Enter {
+                    self.file.input(Input::from(key));
+                }
+            }
+        }
+    }
+
     pub fn run_action(&mut self, action: Action) {
         match action {
             Action::Quit => self.should_quit = true,
@@ -911,6 +1064,7 @@ impl App {
             Action::NextMethod => self.method = self.method.next(),
             Action::PrevMethod => self.method = self.method.prev(),
             Action::ToggleRequestTab => self.toggle_request_tab(),
+            Action::NextBodyType => self.next_body_kind(),
             Action::ToggleKind => self.toggle_kind(),
             Action::LoadSchema => self.load_schema(),
             Action::Cancel => self.cancel_call(),
@@ -991,35 +1145,78 @@ impl App {
         let Some(suggestion) = self.suggestions.items.get(index) else {
             return;
         };
-        self.schema_path = single_line(&suggestion.text.clone());
+        let text = suggestion.text.clone();
+        match self.suggestions.target {
+            SuggestTarget::Schema => self.schema_path = single_line(&text),
+            SuggestTarget::Body => match self.body_kind {
+                BodyKind::Multipart => self.multipart.set_value(&text),
+                _ => self.file = single_line(&text),
+            },
+        }
         self.suggestions = Suggestions::default();
         self.suggested_for = None;
     }
 
-    /// Recomputes the suggestions when the schema path changed; they only exist while the
-    /// file input has focus.
+    /// The `@file` input under the cursor in the body editor, as typed.
+    fn body_file_input(&self) -> Option<String> {
+        if self.kind != Kind::Http
+            || self.focus != Focus::Body
+            || self.request_tab != RequestTab::Body
+        {
+            return None;
+        }
+        let text = match self.body_kind {
+            BodyKind::Multipart if self.multipart.col == Col::Value => {
+                self.multipart.cell().lines().join("")
+            }
+            BodyKind::File => self.file_text(),
+            _ => return None,
+        };
+        (text.starts_with('@') && !text.starts_with("@@")).then_some(text)
+    }
+
+    /// Recomputes the suggestions when the input they complete changed; they only exist
+    /// while that input has focus: the gRPC schema file, or an `@file` of the body.
     fn refresh_suggestions(&mut self) {
-        let active = self.kind == Kind::Grpc
+        let free = self.modal.is_none() && self.picker.is_none();
+        let schema = self.kind == Kind::Grpc
             && self.schema_mode == SchemaMode::File
             && self.focus == Focus::Schema
-            && self.modal.is_none()
-            && self.picker.is_none();
-        if !active {
-            self.suggestions = Suggestions::default();
-            self.suggested_for = None;
+            && free;
+        let body = if free { self.body_file_input() } else { None };
+        let (target, text) = match (schema, body) {
+            (true, _) => (SuggestTarget::Schema, self.schema_path_text()),
+            (false, Some(text)) => (SuggestTarget::Body, text),
+            (false, None) => {
+                self.suggestions = Suggestions::default();
+                self.suggested_for = None;
+                return;
+            }
+        };
+        if self.suggested_for.as_deref() == Some(text.as_str()) && self.suggestions.target == target
+        {
             return;
         }
-        let text = self.schema_path_text();
-        if self.suggested_for.as_deref() == Some(text.as_str()) {
-            return;
-        }
-        let mut items = complete::complete(&text);
+        let mut items = match target {
+            SuggestTarget::Schema => complete::complete(&text),
+            SuggestTarget::Body => complete::complete_files(&text[1..])
+                .into_iter()
+                .map(|s| Suggestion {
+                    text: format!("@{}", s.text),
+                    dir: s.dir,
+                })
+                .collect(),
+        };
         // the input already is that file: nothing left to suggest
         if items.len() == 1 && items[0].text == text {
             items.clear();
         }
         self.suggested_for = Some(text);
-        self.suggestions = Suggestions { items, sel: None };
+        self.suggestions = Suggestions {
+            target,
+            items,
+            sel: None,
+        };
     }
 
     fn schema_input(&mut self, key: KeyEvent) {
@@ -1485,7 +1682,8 @@ impl App {
             return self.modal_mouse(event, screen);
         }
         if self.suggestions_open() {
-            let popup = ui::suggestions_area(areas.schema, self.suggestions.items.len());
+            let anchor = ui::suggestions_anchor(self, areas.schema, areas.body);
+            let popup = ui::suggestions_area(anchor, self.suggestions.items.len());
             if let (MouseEventKind::Down(MouseButton::Left), true) =
                 (event.kind, popup.contains(at))
             {
@@ -1672,12 +1870,20 @@ impl App {
                 self.focus = self.editor_focus();
                 return;
             }
+            if view.kind == Kind::Http
+                && self.request_tab == RequestTab::Body
+                && ui::body_kind_title_at(areas.body, at, view.body_kind)
+            {
+                self.focus_editor(self.editor_focus());
+                return self.next_body_kind();
+            }
             self.focus_editor(self.editor_focus());
             let inner = ui::inner(areas.body);
             if !inner.contains(at) {
                 return;
             }
             match self.request_tab {
+                RequestTab::Body if self.kind == Kind::Http => self.click_http_body(at, inner),
                 RequestTab::Body => {
                     let (row_scroll, col_scroll) = ui::editor_scroll(cursor_of(&self.body), inner);
                     self.body.move_cursor(CursorMove::Jump(
@@ -1700,23 +1906,41 @@ impl App {
 
     /// Clicking an input puts the cursor there; clicking the last line adds a header.
     fn click_headers(&mut self, at: Position, inner: Rect) {
-        let grid = ui::header_grid(inner, self.headers.rows.len(), self.headers.row);
-        if grid.add.is_some_and(|r| r.contains(at)) {
-            return self.headers.add_row();
-        }
-        for cells in &grid.rows {
-            for (rect, col) in [(cells.name, Col::Name), (cells.value, Col::Value)] {
-                if rect.contains(at) {
-                    let row = &self.headers.rows[cells.row];
-                    let ta = if col == Col::Name {
-                        &row.name
-                    } else {
-                        &row.value
-                    };
-                    let (_, scroll) = ui::editor_scroll(cursor_of(ta), rect);
-                    self.headers
-                        .select(cells.row, col, (at.x - rect.x) + scroll as u16);
+        click_pairs(&mut self.headers, at, inner);
+    }
+
+    /// A click in the REST body editor, which depends on the body kind.
+    fn click_http_body(&mut self, at: Position, inner: Rect) {
+        match self.body_kind {
+            BodyKind::Text | BodyKind::JsonRaw => {
+                let (row_scroll, col_scroll) = ui::editor_scroll(cursor_of(&self.body), inner);
+                self.body.move_cursor(CursorMove::Jump(
+                    (at.y - inner.y) + row_scroll as u16,
+                    (at.x - inner.x) + col_scroll as u16,
+                ));
+            }
+            BodyKind::Form => click_pairs(&mut self.form, at, inner),
+            BodyKind::Multipart => click_pairs(&mut self.multipart, at, inner),
+            BodyKind::File => {
+                let (_, col_scroll) = ui::editor_scroll(cursor_of(&self.file), inner);
+                self.file
+                    .move_cursor(CursorMove::Jump(0, (at.x - inner.x) + col_scroll as u16));
+            }
+            BodyKind::Json => {
+                let depths: Vec<usize> = self.json.rows.iter().map(|r| r.depth).collect();
+                let grid = ui::json_grid(inner, &depths, self.json.row);
+                if grid.hint.is_some_and(|r| r.contains(at)) {
+                    let last = self.json.rows.len() - 1;
+                    self.json.select(last, JsonCol::Key);
                     return;
+                }
+                for cells in &grid.rows {
+                    for (rect, col) in [(cells.key, JsonCol::Key), (cells.value, JsonCol::Value)] {
+                        if rect.contains(at) {
+                            self.json.select(cells.row, col);
+                            return;
+                        }
+                    }
                 }
             }
         }
@@ -1781,6 +2005,11 @@ impl App {
         self.method = Method::Get;
         self.url = single_line("");
         self.body = TextArea::default();
+        self.body_kind = BodyKind::default();
+        self.json = JsonEditor::default();
+        self.form = HeaderEditor::default();
+        self.multipart = HeaderEditor::default();
+        self.file = single_line("");
         self.variables = TextArea::default();
         self.headers = HeaderEditor::default();
         self.schema_path = single_line("");
@@ -1859,12 +2088,48 @@ impl App {
         self.set_kind(Kind::Http);
         self.method = request.method;
         self.url = single_line(&request.url);
-        self.body = request
-            .body
-            .as_deref()
-            .map(|b| TextArea::new(b.lines().map(str::to_owned).collect()))
-            .unwrap_or_default();
+        self.load_body(request.body.as_ref());
         self.headers = HeaderEditor::from_headers(&request.headers);
+    }
+
+    /// Fills the REST body editors from `body`; the other kinds start empty.
+    fn load_body(&mut self, body: Option<&Body>) {
+        self.body = TextArea::default();
+        self.json = JsonEditor::default();
+        self.form = HeaderEditor::default();
+        self.multipart = HeaderEditor::default();
+        self.file = single_line("");
+        self.body_kind = body.map_or_else(BodyKind::default, Body::kind);
+        let text = |t: &str| TextArea::new(t.lines().map(str::to_owned).collect());
+        match body {
+            None => {}
+            Some(Body::Text(t) | Body::JsonRaw(t)) => self.body = text(t),
+            Some(Body::Json(value)) => match JsonEditor::from_value(value) {
+                Some(json) => self.json = json,
+                // a lone scalar has no fields to edit
+                None => {
+                    self.body = text(&value.to_json_pretty());
+                    self.body_kind = BodyKind::JsonRaw;
+                }
+            },
+            Some(Body::Form(fields)) => {
+                self.form = HeaderEditor::from_pairs(
+                    fields.iter().map(|f| (f.name.as_str(), f.value.as_str())),
+                );
+            }
+            Some(Body::Multipart(parts)) => {
+                let values: Vec<String> = parts.iter().map(|p| p.value.to_string()).collect();
+                self.multipart = HeaderEditor::from_pairs(
+                    parts
+                        .iter()
+                        .zip(&values)
+                        .map(|(p, v)| (p.name.as_str(), v.as_str())),
+                );
+            }
+            Some(Body::File(path)) => {
+                self.file = single_line(&format!("@{}", path.trim_start_matches('@')))
+            }
+        }
     }
 
     fn load_graphql_request(&mut self, request: &GraphqlRequest) {
@@ -2276,6 +2541,29 @@ fn prev_focus(f: Focus, editor: Focus, kind: Kind) -> Focus {
             Focus::Method
         }
         (Focus::Response, _) => editor,
+    }
+}
+
+/// Clicking an input puts the cursor there; clicking the last line adds a row.
+fn click_pairs(editor: &mut HeaderEditor, at: Position, inner: Rect) {
+    let grid = ui::header_grid(inner, editor.rows.len(), editor.row);
+    if grid.add.is_some_and(|r| r.contains(at)) {
+        return editor.add_row();
+    }
+    for cells in &grid.rows {
+        for (rect, col) in [(cells.name, Col::Name), (cells.value, Col::Value)] {
+            if rect.contains(at) {
+                let row = &editor.rows[cells.row];
+                let ta = if col == Col::Name {
+                    &row.name
+                } else {
+                    &row.value
+                };
+                let (_, scroll) = ui::editor_scroll(cursor_of(ta), rect);
+                editor.select(cells.row, col, (at.x - rect.x) + scroll as u16);
+                return;
+            }
+        }
     }
 }
 

@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 
-use super::common::trace_url_resolve;
+use super::common::{add_missing_header, trace_url_resolve};
 use super::trace::version_name;
 use super::{
     ClientError, Header, HttpClient, HttpRequest, HttpResponse, Method, Trace, trace_certificate,
@@ -61,12 +61,29 @@ impl HttpClient for ReqwestClient {
 
         trace_url_resolve(trace, &url).await;
 
+        // Files are read here, so a missing one fails before anything is sent.
+        let encoded = match request.body.clone().filter(|b| !b.is_empty()) {
+            Some(body) => Some(
+                tokio::task::spawn_blocking(move || body.encode())
+                    .await
+                    .map_err(|e| ClientError::Body(e.to_string()))?
+                    .map_err(|e| ClientError::Body(e.to_string()))?,
+            ),
+            None => None,
+        };
+        // a Content-Type the user set wins over the one the body kind implies
+        let mut headers = request.headers.clone();
+        if let Some(encoded) = &encoded {
+            add_missing_header(&mut headers, "Content-Type", &encoded.content_type);
+        }
+
         let mut builder = self.inner.request(request.method.into(), url.clone());
-        for h in &request.headers {
+        for h in &headers {
             builder = builder.header(&h.name, &h.value);
         }
-        if let Some(body) = &request.body {
-            builder = builder.body(body.clone());
+        let body_len = encoded.as_ref().map(|e| e.bytes.len());
+        if let Some(encoded) = encoded {
+            builder = builder.body(encoded.bytes);
         }
 
         let started = Instant::now();
@@ -75,7 +92,7 @@ impl HttpClient for ReqwestClient {
             .await
             .map_err(|e| ClientError::Transport(describe(&e)))?;
 
-        trace_exchange(trace, request, &url, &res);
+        trace_exchange(trace, request, &headers, body_len, &url, &res);
 
         let status = res.status().as_u16();
         let headers = res
@@ -101,6 +118,8 @@ impl HttpClient for ReqwestClient {
 fn trace_exchange(
     trace: &Trace,
     request: &HttpRequest,
+    headers: &[Header],
+    body_len: Option<usize>,
     url: &reqwest::Url,
     res: &reqwest::Response,
 ) {
@@ -131,12 +150,12 @@ fn trace_exchange(
     };
     trace.emit(format!("> {} {target} {version}", request.method));
     trace.emit(format!("> Host: {host}"));
-    for h in &request.headers {
+    for h in headers {
         trace.emit(format!("> {}: {}", h.name, h.value));
     }
     trace.emit(">");
-    if let Some(body) = &request.body {
-        trace.emit(format!("* Request body: {} bytes", body.len()));
+    if let Some(len) = body_len {
+        trace.emit(format!("* Request body: {len} bytes"));
     }
     trace.emit(format!("< {version} {}", res.status().as_u16()));
     for (name, value) in res.headers() {
