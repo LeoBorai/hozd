@@ -15,6 +15,7 @@ use crate::client::{
     GrpcOutcome, GrpcRequest, GrpcStatus, Header, HttpRequest, JsonValue, Kind, Method,
     OperationKind, Part, PartValue, Protocol, Request, Schema, SchemaSource, SharedGrpc,
     SharedHttp, SharedWs, Trace, TungsteniteWs, WsEvent, WsOutcome, WsRequest, introspect,
+    split_query, with_query,
 };
 use crate::history::{History, HistoryEntry, Outcome, Summary};
 use crate::project::{Loaded, Template};
@@ -48,6 +49,8 @@ pub enum Focus {
     /// GraphQL editor: the variables JSON.
     Variables,
     Headers,
+    /// REST editor: the URL query parameters.
+    Params,
     /// gRPC editor: the schema source box.
     Schema,
     /// gRPC editor: the method box; `Enter` opens the picker.
@@ -63,6 +66,8 @@ pub enum RequestTab {
     /// GraphQL only.
     Variables,
     Headers,
+    /// REST only.
+    Params,
 }
 
 /// What a loaded schema was loaded for; it is dropped when the editor stops matching.
@@ -312,6 +317,8 @@ pub struct App {
     pub file: TextArea<'static>,
     /// One `Name: value` per line, see [`headers`].
     pub headers: HeaderEditor,
+    /// REST URL query parameters, encoded into the URL when the request is built.
+    pub params: HeaderEditor,
     pub request_tab: RequestTab,
     /// GraphQL editor: the variables, a JSON object.
     pub variables: TextArea<'static>,
@@ -419,6 +426,7 @@ impl App {
             multipart: HeaderEditor::default(),
             file: single_line(""),
             headers: HeaderEditor::default(),
+            params: HeaderEditor::default(),
             request_tab: RequestTab::Body,
             variables: TextArea::default(),
             graphql: None,
@@ -500,22 +508,55 @@ impl App {
     /// Like [`editor_request`](Self::editor_request) but fails on an invalid header line.
     pub fn try_request(&self) -> Result<HttpRequest, String> {
         let headers = self.headers.parse()?;
+        let url = self.http_url(true).map_err(|e| format!("URL param {e}"))?;
         let body = self.build_body(true)?;
         if let Some(body) = &body {
             body.check().map_err(|e| e.to_string())?;
         }
         Ok(HttpRequest {
             method: self.method,
-            url: self.url_text().trim().to_owned(),
+            url,
             headers,
             body,
         })
     }
 
+    /// Query parameters are edited in the "URL Params" tab only: whatever follows a `?` in
+    /// the address moves into the table.
+    fn absorb_query(&mut self) {
+        if self.kind != Kind::Http || !self.url_text().contains('?') {
+            return;
+        }
+        let (url, found) = split_query(&self.url_text());
+        let mut pairs = self.params.pairs_untrimmed(false).unwrap_or_default();
+        pairs.extend(found);
+        self.url = single_line(&url);
+        self.params = HeaderEditor::from_pairs(pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    }
+
+    /// The number shown next to the "URL Params" title: the table's rows while editing,
+    /// the query pairs of the URL while previewing a stored request.
+    pub fn params_count(&self, request: &RequestView, previewing: bool) -> usize {
+        if previewing {
+            let query = request.url.split('#').next().unwrap_or("");
+            query
+                .split_once('?')
+                .map_or(0, |(_, q)| q.split('&').filter(|p| !p.is_empty()).count())
+        } else {
+            self.params.pairs_untrimmed(false).map_or(0, |p| p.len())
+        }
+    }
+
+    /// The URL as sent: the address with the query parameters encoded onto it.
+    fn http_url(&self, strict: bool) -> Result<String, String> {
+        let params = self.params.pairs_untrimmed(strict)?;
+        Ok(with_query(self.url_text().trim(), &params))
+    }
+
     fn build_request(&self, headers: Vec<Header>) -> HttpRequest {
         HttpRequest {
             method: self.method,
-            url: self.url_text().trim().to_owned(),
+            url: self.http_url(false).unwrap_or_default(),
             headers,
             body: self.build_body(false).ok().flatten(),
         }
@@ -743,6 +784,7 @@ impl App {
             RequestTab::Body => Focus::Body,
             RequestTab::Variables => Focus::Variables,
             RequestTab::Headers => Focus::Headers,
+            RequestTab::Params => Focus::Params,
         }
     }
 
@@ -760,7 +802,10 @@ impl App {
 
     pub fn set_request_tab(&mut self, tab: RequestTab) {
         self.request_tab = tab;
-        if matches!(self.focus, Focus::Body | Focus::Variables | Focus::Headers) {
+        if matches!(
+            self.focus,
+            Focus::Body | Focus::Variables | Focus::Headers | Focus::Params
+        ) {
             self.focus = self.editor_focus();
         }
     }
@@ -926,6 +971,14 @@ impl App {
     // ---- input ---------------------------------------------------------
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        self.key_inner(key);
+        // a query pasted or loaded into the address moves once the address loses focus
+        if self.focus != Focus::Url {
+            self.absorb_query();
+        }
+    }
+
+    fn key_inner(&mut self, key: KeyEvent) {
         self.handle_key_event(key);
         self.refresh_suggestions();
     }
@@ -949,7 +1002,12 @@ impl App {
         // `?` types a character in text fields, so F1 opens the menu from anywhere.
         let typing = matches!(
             self.focus,
-            Focus::Url | Focus::Body | Focus::Variables | Focus::Headers | Focus::Schema
+            Focus::Url
+                | Focus::Body
+                | Focus::Variables
+                | Focus::Headers
+                | Focus::Params
+                | Focus::Schema
         );
         if key.code == KeyCode::F(1) || (key.code == KeyCode::Char('?') && !typing && !ctrl) {
             return self.help = Some(0);
@@ -1017,6 +1075,16 @@ impl App {
             Focus::List => self.list_key(key.code),
             Focus::Url => match key.code {
                 KeyCode::Enter => self.send(),
+                // the query belongs to the "URL Params" tab: `?` jumps there
+                KeyCode::Char('?')
+                    if self.kind == Kind::Http
+                        && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.request_tab = RequestTab::Params;
+                    self.params.row = self.params.rows.len() - 1;
+                    self.params.col = Col::Name;
+                    self.set_focus(Focus::Params);
+                }
                 _ => {
                     self.url.input(Input::from(key));
                 }
@@ -1027,6 +1095,9 @@ impl App {
             }
             Focus::Headers => {
                 self.headers.key(key);
+            }
+            Focus::Params => {
+                self.params.key(key);
             }
             Focus::Schema => self.schema_input(key),
             Focus::Method => self.method_key(key.code),
@@ -1621,7 +1692,9 @@ impl App {
             (RequestTab::Body, Kind::Graphql) => RequestTab::Variables,
             (RequestTab::Body, _) => RequestTab::Headers,
             (RequestTab::Variables, _) => RequestTab::Headers,
+            (RequestTab::Headers, Kind::Http) => RequestTab::Params,
             (RequestTab::Headers, _) => RequestTab::Body,
+            (RequestTab::Params, _) => RequestTab::Body,
         });
     }
 
@@ -1665,6 +1738,7 @@ impl App {
 
     /// `screen` is the full terminal area the UI was last drawn into.
     pub fn handle_mouse(&mut self, event: MouseEvent, screen: Rect) {
+        self.absorb_query();
         self.handle_mouse_event(event, screen);
         self.refresh_suggestions();
     }
@@ -1857,11 +1931,14 @@ impl App {
                 self.last_response_click = Some(now);
             }
         } else if areas.body.contains(at) {
-            let view = self.view().request;
+            let current = self.view();
+            let previewing = current.previewing;
+            let view = current.request;
             if let Some(tab) = ui::request_tab_at(
                 areas.body,
                 at,
                 view.headers.len(),
+                self.params_count(&view, previewing),
                 view.kind,
                 self.panels().len() - 1,
             ) {
@@ -1900,6 +1977,7 @@ impl App {
                     ));
                 }
                 RequestTab::Headers => self.click_headers(at, inner),
+                RequestTab::Params => click_pairs(&mut self.params, at, inner),
             }
         }
     }
@@ -2012,6 +2090,7 @@ impl App {
         self.file = single_line("");
         self.variables = TextArea::default();
         self.headers = HeaderEditor::default();
+        self.params = HeaderEditor::default();
         self.schema_path = single_line("");
         self.schema_mode = SchemaMode::Reflection;
         self.suggestions = Suggestions::default();
@@ -2088,6 +2167,8 @@ impl App {
         self.set_kind(Kind::Http);
         self.method = request.method;
         self.url = single_line(&request.url);
+        self.params = HeaderEditor::default();
+        self.absorb_query();
         self.load_body(request.body.as_ref());
         self.headers = HeaderEditor::from_headers(&request.headers);
     }
@@ -2184,6 +2265,7 @@ impl App {
     // ---- background work ------------------------------------------------
 
     pub fn send(&mut self) {
+        self.absorb_query();
         if self.sending {
             self.status = Some("a request is already in flight".into());
             return;
@@ -2524,7 +2606,7 @@ fn next_focus(f: Focus, editor: Focus, kind: Kind) -> Focus {
         (Focus::Url, Kind::Graphql) => Focus::Method,
         (Focus::Schema, _) => Focus::Method,
         (Focus::Method, _) => editor,
-        (Focus::Body | Focus::Variables | Focus::Headers, _) => Focus::Response,
+        (Focus::Body | Focus::Variables | Focus::Headers | Focus::Params, _) => Focus::Response,
         (Focus::Response, _) => Focus::List,
     }
 }
@@ -2536,10 +2618,14 @@ fn prev_focus(f: Focus, editor: Focus, kind: Kind) -> Focus {
         (Focus::Schema, _) => Focus::Url,
         (Focus::Method, Kind::Graphql) => Focus::Url,
         (Focus::Method, _) => Focus::Schema,
-        (Focus::Body | Focus::Variables | Focus::Headers, Kind::Http | Kind::Ws) => Focus::Url,
-        (Focus::Body | Focus::Variables | Focus::Headers, Kind::Grpc | Kind::Graphql) => {
-            Focus::Method
-        }
+        (
+            Focus::Body | Focus::Variables | Focus::Headers | Focus::Params,
+            Kind::Http | Kind::Ws,
+        ) => Focus::Url,
+        (
+            Focus::Body | Focus::Variables | Focus::Headers | Focus::Params,
+            Kind::Grpc | Kind::Graphql,
+        ) => Focus::Method,
         (Focus::Response, _) => editor,
     }
 }

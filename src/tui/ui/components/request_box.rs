@@ -4,9 +4,10 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Paragraph, Wrap};
+use unicode_width::UnicodeWidthStr;
 
-use crate::client::{BodyKind, Kind};
+use crate::client::{BodyKind, Kind, Protocol};
 
 use crate::tui::app::{App, Focus, RequestTab};
 use crate::tui::headers::{self, Col, HeaderEditor};
@@ -25,9 +26,13 @@ pub(crate) fn draw_request_box(
     previewing: bool,
     area: Rect,
 ) {
-    let lower_focused = matches!(app.focus, Focus::Body | Focus::Variables | Focus::Headers);
+    let lower_focused = matches!(
+        app.focus,
+        Focus::Body | Focus::Variables | Focus::Headers | Focus::Params
+    );
     let labels = request_tab_labels(
         request.headers.len(),
+        app.params_count(request, previewing),
         request.kind,
         app.panels()
             .iter()
@@ -94,6 +99,26 @@ pub(crate) fn draw_request_box(
                 .collect();
             frame.render_widget(Paragraph::new(lines), body_inner);
         }
+        (RequestTab::Params, true) => {
+            let lines: Vec<Line> = request_params(&request.url)
+                .into_iter()
+                .map(|(k, v)| Line::raw(format!("{k}={v}")))
+                .collect();
+            frame.render_widget(Paragraph::new(lines), body_inner);
+        }
+        (RequestTab::Params, false) => draw_pair_rows(
+            frame,
+            &app.params,
+            app.focus == Focus::Params,
+            body_inner,
+            &Pairs {
+                validate_names: false,
+                files: false,
+                value: "Value",
+                add: "+ add param (Enter on the last value, Ctrl+D removes a row)",
+                from_start: true,
+            },
+        ),
         (RequestTab::Body, false) if request.kind == Kind::Http => {
             draw_http_body(frame, app, body_inner)
         }
@@ -136,6 +161,7 @@ fn draw_http_body(frame: &mut Frame, app: &App, area: Rect) {
                 files: false,
                 value: "Value",
                 add: "+ add field (Enter on the last value, Ctrl+D removes a row)",
+                from_start: false,
             },
         ),
         BodyKind::Multipart => draw_pair_rows(
@@ -148,6 +174,7 @@ fn draw_http_body(frame: &mut Frame, app: &App, area: Rect) {
                 files: true,
                 value: "Value or @file",
                 add: "+ add part (@ picks a file, Ctrl+D removes a row)",
+                from_start: false,
             },
         ),
         BodyKind::File => {
@@ -276,6 +303,9 @@ struct Pairs {
     files: bool,
     value: &'static str,
     add: &'static str,
+    /// Whether an input that does not have the cursor shows the start of a long text
+    /// (with `…`) instead of the end, so nothing reads as missing.
+    from_start: bool,
 }
 
 /// The header inputs: name `:` value, one row each, then the "add header" line.
@@ -290,6 +320,7 @@ pub(crate) fn draw_header_rows(frame: &mut Frame, app: &App, area: Rect) {
             files: false,
             value: "Value",
             add: "+ add header (Enter on the last value, Ctrl+D removes a row)",
+            from_start: false,
         },
     );
 }
@@ -330,6 +361,20 @@ fn draw_pair_rows(
                 );
                 continue;
             }
+            let text = ta.lines()[0].clone();
+            if look.from_start && !here && text.width() > rect.width as usize {
+                let keep = (rect.width as usize).saturating_sub(1);
+                let mut shown = String::new();
+                for c in text.chars() {
+                    if shown.width() + c.to_string().width() > keep {
+                        break;
+                    }
+                    shown.push(c);
+                }
+                shown.push('…');
+                frame.render_widget(Paragraph::new(shown), rect);
+                continue;
+            }
             let syntax = if col == Col::Name {
                 if look.validate_names && headers::name_is_invalid(row) {
                     Syntax::Invalid
@@ -350,4 +395,149 @@ fn draw_pair_rows(
             rect,
         );
     }
+}
+
+/// The `key=value` pairs of the query string in `url`, still encoded.
+fn request_params(url: &str) -> Vec<(String, String)> {
+    let query = url.split('#').next().unwrap_or("");
+    let Some((_, query)) = query.split_once('?') else {
+        return Vec::new();
+    };
+    query
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .map(|p| match p.split_once('=') {
+            Some((k, v)) => (k.to_owned(), v.to_owned()),
+            None => (p.to_owned(), String::new()),
+        })
+        .collect()
+}
+
+/// The request as it goes over the wire: request line, headers, blank line, body. Other
+/// kinds show the HTTP request they are carried by.
+pub(crate) fn draw_http_preview(
+    frame: &mut Frame,
+    request: &crate::tui::app::RequestView,
+    area: Rect,
+) {
+    let block = block("HTTP", false);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let dim = Style::new().fg(Color::DarkGray);
+    let (host, mut target) = split_url(&request.url);
+    let mut version = "HTTP/1.1";
+    let mut method = request.method.as_str();
+    let mut defaults: Vec<(&str, String)> = Vec::new();
+    let mut body = request.body.clone();
+    let user_agent = format!(
+        "hozd/{} ({} {})",
+        &VERSION[1..],
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    match request.kind {
+        Kind::Http => {
+            if !body.is_empty() {
+                defaults.push(("Content-Type", request.body_kind.content_type().to_owned()));
+            }
+        }
+        Kind::Graphql => {
+            method = "POST";
+            let mut payload = serde_json::Map::new();
+            payload.insert("query".into(), request.body.clone().into());
+            if let Ok(v @ serde_json::Value::Object(_)) =
+                serde_json::from_str(request.variables.trim())
+            {
+                payload.insert("variables".into(), v);
+            }
+            body = serde_json::Value::Object(payload).to_string();
+            defaults.push(("Content-Type", "application/json".to_owned()));
+        }
+        Kind::Ws => {
+            method = "GET";
+            body.clear();
+            defaults.extend([
+                ("Upgrade", "websocket".to_owned()),
+                ("Connection", "Upgrade".to_owned()),
+                ("Sec-WebSocket-Version", "13".to_owned()),
+                ("Sec-WebSocket-Key", "<generated>".to_owned()),
+            ]);
+        }
+        Kind::Grpc => {
+            method = "POST";
+            target = format!("/{}", request.grpc.method.trim_start_matches('/'));
+            if request.grpc.protocol == Protocol::Grpc {
+                version = "HTTP/2";
+                defaults.extend([
+                    ("Content-Type", "application/grpc".to_owned()),
+                    ("TE", "trailers".to_owned()),
+                ]);
+            } else {
+                defaults.extend([
+                    ("Content-Type", "application/json".to_owned()),
+                    ("Connect-Protocol-Version", "1".to_owned()),
+                ]);
+            }
+        }
+    }
+    // gRPC addresses are `host:port` without a scheme; the host is the authority either way
+    let has = |name: &str| {
+        request
+            .headers
+            .iter()
+            .any(|h| h.name.eq_ignore_ascii_case(name))
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            method.to_owned(),
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!(" {target} ")),
+        Span::styled(version, dim),
+    ])];
+    let mut header = |name: &str, value: String| {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{name}: "), Style::new().fg(Color::Cyan)),
+            Span::raw(value),
+        ]));
+    };
+    if !has("Host") {
+        header("Host", host);
+    }
+    for h in &request.headers {
+        header(&h.name, h.value.clone());
+    }
+    if !has("User-Agent") {
+        header("User-Agent", user_agent);
+    }
+    for (name, value) in defaults {
+        if !has(name) {
+            header(name, value);
+        }
+    }
+    if !body.is_empty() {
+        header("Content-Length", body.len().to_string());
+    }
+    if request.kind != Kind::Ws && !has("Connection") {
+        header("Connection", "close".to_owned());
+    }
+    if !body.is_empty() {
+        lines.push(Line::raw(""));
+        lines.extend(body.lines().map(|l| Line::raw(l.to_owned())));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+/// `(host, request target)` of `url`; the scheme and fragment are not sent.
+fn split_url(url: &str) -> (String, String) {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let rest = rest.split('#').next().unwrap_or("");
+    let at = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (host, target) = rest.split_at(at);
+    let target = if target.starts_with('/') {
+        target.to_owned()
+    } else {
+        format!("/{target}")
+    };
+    (host.to_owned(), target)
 }

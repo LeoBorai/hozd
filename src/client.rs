@@ -5,6 +5,7 @@ use async_trait::async_trait;
 pub use body::{
     Body, BodyError, BodyKind, Encoded, Field, JsonValue, Part, PartValue, expand_home,
 };
+pub use common::{split_query, with_query};
 pub use fake::FakeClient;
 pub use graphql::{
     GraphqlOperation, GraphqlRequest, GraphqlSchema, OperationKind, introspection_request,
