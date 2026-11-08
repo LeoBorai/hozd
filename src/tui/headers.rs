@@ -22,7 +22,7 @@ pub struct Row {
 }
 
 impl Row {
-    fn new(name: &str, value: &str) -> Self {
+    pub fn new(name: &str, value: &str) -> Self {
         Self {
             name: single_line(name),
             value: single_line(value),
@@ -59,17 +59,17 @@ impl Row {
     }
 }
 
-fn single_line(text: &str) -> TextArea<'static> {
+pub(crate) fn single_line(text: &str) -> TextArea<'static> {
     let mut ta = TextArea::new(vec![text.to_owned()]);
     ta.move_cursor(CursorMove::End);
     ta
 }
 
-fn cursor_col(ta: &TextArea<'static>) -> usize {
+pub(crate) fn cursor_col(ta: &TextArea<'static>) -> usize {
     ta.cursor().1
 }
 
-fn len(ta: &TextArea<'static>) -> usize {
+pub(crate) fn len(ta: &TextArea<'static>) -> usize {
     ta.lines()[0].chars().count()
 }
 
@@ -122,6 +122,38 @@ impl HeaderEditor {
         Ok(headers)
     }
 
+    /// One row per `(name, value)` pair, plus an empty one to type into.
+    pub fn from_pairs<'a>(pairs: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
+        let mut rows: Vec<Row> = pairs.into_iter().map(|(n, v)| Row::new(n, v)).collect();
+        rows.push(Row::new("", ""));
+        Self {
+            row: rows.len() - 1,
+            rows,
+            col: Col::Name,
+        }
+    }
+
+    /// The `(name, value)` of every non-blank row, with the name trimmed. A row without a
+    /// name is an error when `strict` and skipped otherwise; the error names its 1-based
+    /// number.
+    pub fn pairs(&self, strict: bool) -> Result<Vec<(String, String)>, String> {
+        let mut pairs = Vec::new();
+        for (i, row) in self.rows.iter().enumerate() {
+            if row.is_blank() {
+                continue;
+            }
+            let name = row.name_text().trim().to_owned();
+            if name.is_empty() {
+                if strict {
+                    return Err(format!("row {}: the name is empty", i + 1));
+                }
+                continue;
+            }
+            pairs.push((name, row.value_text()));
+        }
+        Ok(pairs)
+    }
+
     /// `Name: value` per non-blank row.
     pub fn lines(&self) -> Vec<String> {
         self.rows
@@ -152,6 +184,11 @@ impl HeaderEditor {
         self.row = row.min(self.rows.len() - 1);
         self.col = col;
         self.cell_mut().move_cursor(CursorMove::Jump(0, x));
+    }
+
+    /// Replaces the value of the row under the cursor and moves the cursor to its end.
+    pub fn set_value(&mut self, text: &str) {
+        self.rows[self.row].value = single_line(text);
     }
 
     /// Appends an empty row and moves to its name.

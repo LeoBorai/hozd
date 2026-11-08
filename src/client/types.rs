@@ -5,6 +5,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::ClientError;
+use super::body::Body;
 use super::graphql::GraphqlRequest;
 use super::grpc::{GrpcOutcome, GrpcRequest};
 use super::ws::{WsOutcome, WsRequest};
@@ -97,7 +98,7 @@ pub struct HttpRequest {
     #[serde(default)]
     pub headers: Vec<Header>,
     #[serde(default)]
-    pub body: Option<String>,
+    pub body: Option<Body>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

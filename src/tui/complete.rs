@@ -19,6 +19,20 @@ pub struct Suggestion {
 /// The directories and schema files that continue `typed`, directories first. `~/` is
 /// understood; the suggestions keep the form the user typed.
 pub fn complete(typed: &str) -> Vec<Suggestion> {
+    complete_matching(typed, |name| {
+        Path::new(name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|ext| SCHEMA_EXTENSIONS.contains(&ext))
+    })
+}
+
+/// Like [`complete`] but suggests every file, for the `@file` inputs of a request body.
+pub fn complete_files(typed: &str) -> Vec<Suggestion> {
+    complete_matching(typed, |_| true)
+}
+
+fn complete_matching(typed: &str, wanted: impl Fn(&str) -> bool) -> Vec<Suggestion> {
     let (dir_part, prefix) = match typed.rfind('/') {
         Some(i) => typed.split_at(i + 1),
         None => ("", typed),
@@ -41,8 +55,7 @@ pub fn complete(typed: &str) -> Vec<Suggestion> {
                     dir: true,
                 });
             }
-            let ext = Path::new(&name).extension()?.to_str()?;
-            SCHEMA_EXTENSIONS.contains(&ext).then(|| Suggestion {
+            wanted(&name).then(|| Suggestion {
                 text: format!("{dir_part}{name}"),
                 dir: false,
             })
@@ -60,15 +73,7 @@ fn expand(dir_part: &str) -> PathBuf {
     expand_home(dir_part)
 }
 
-/// `path` with a leading `~` or `~/` replaced by the home directory.
-pub fn expand_home(path: &str) -> PathBuf {
-    let home = || dirs::home_dir().unwrap_or_default();
-    match path.strip_prefix("~") {
-        Some("") => home(),
-        Some(rest) if rest.starts_with('/') => home().join(&rest[1..]),
-        _ => PathBuf::from(path),
-    }
-}
+pub use crate::client::expand_home;
 
 #[cfg(test)]
 mod tests {
@@ -76,6 +81,19 @@ mod tests {
 
     fn texts(found: &[Suggestion]) -> Vec<&str> {
         found.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    #[test]
+    fn every_file_is_suggested_by_complete_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        for file in ["a.png", "b.txt"] {
+            std::fs::write(dir.path().join(file), "").unwrap();
+        }
+        assert_eq!(
+            texts(&complete_files(&format!("{root}/"))),
+            [format!("{root}/a.png"), format!("{root}/b.txt")]
+        );
     }
 
     #[test]

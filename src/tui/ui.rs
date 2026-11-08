@@ -2,8 +2,6 @@
 
 use ratatui::Frame;
 
-use crate::client::Kind;
-
 use super::app::App;
 
 mod components;
@@ -11,7 +9,7 @@ mod layout;
 
 pub use components::{
     HELP_GRAPHQL, HELP_GRPC, HELP_REST, HELP_WS, REPO_URL, VERSION, contribute_area,
-    status_text_width, suggestions_area,
+    status_text_width, suggestions_anchor, suggestions_area,
 };
 pub use layout::*;
 pub(crate) use layout::{center_areas, main_area};
@@ -30,7 +28,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_status(frame, app, status);
     if !app.suggestions.items.is_empty() {
         let [_, center, _] = panel_areas(main);
-        draw_suggestions(frame, app, center_areas(center, Kind::Grpc).schema);
+        let areas = center_areas(center, app.kind);
+        draw_suggestions(
+            frame,
+            app,
+            suggestions_anchor(app, areas.schema, areas.body),
+        );
     }
     if app.picker.is_some() {
         draw_picker(frame, app, frame.area());

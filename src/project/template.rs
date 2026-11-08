@@ -273,7 +273,7 @@ impl Template {
                 method: t.method,
                 url: t.url.clone(),
                 headers: pairs(&t.headers),
-                body: t.body.clone(),
+                body: t.body.clone().map(Into::into),
             }),
             TemplateKind::Grpc(t) => Request::Grpc(GrpcRequest {
                 address: t.address.clone(),

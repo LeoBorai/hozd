@@ -276,3 +276,27 @@ async fn mismatched_request_and_outcome_kinds_are_refused(pool: SqlitePool) {
         .unwrap_err();
     assert!(matches!(err, HistoryError::KindMismatch), "{err}");
 }
+
+#[sqlx::test]
+async fn every_body_type_survives_history(pool: SqlitePool) {
+    use hozd::client::{Body, Field, JsonValue, Part};
+    let history = History::from_pool(pool);
+    let bodies = [
+        Body::Text("t".into()),
+        Body::Json(JsonValue::parse(r#"{"b":1,"a":[null]}"#).unwrap()),
+        Body::JsonRaw("{ \"raw\": true }".into()),
+        Body::Form(vec![Field::new("a", "b c")]),
+        Body::Multipart(vec![Part::text("a", "@b"), Part::file("f", "/tmp/x.png")]),
+        Body::File("/tmp/x.bin".into()),
+    ];
+    for body in bodies {
+        let req = Request::Http(HttpRequest {
+            method: Method::Post,
+            url: "http://x".into(),
+            headers: vec![],
+            body: Some(body),
+        });
+        let id = history.record(&req, &response(200, "ok")).await.unwrap();
+        assert_eq!(history.get(id).await.unwrap().unwrap().request, req);
+    }
+}

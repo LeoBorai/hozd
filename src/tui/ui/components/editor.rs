@@ -16,6 +16,8 @@ pub(crate) enum Syntax {
     HeaderName,
     Invalid,
     Plain,
+    /// An `@path` to a file.
+    File,
     Json,
     Graphql,
 }
@@ -46,6 +48,7 @@ pub(crate) fn render_editor(
                 Syntax::Json => highlight_line(l),
                 Syntax::HeaderName => Line::styled(l.clone(), Style::new().fg(Color::Cyan)),
                 Syntax::Invalid => Line::styled(l.clone(), Style::new().fg(Color::Red)),
+                Syntax::File => Line::styled(l.clone(), Style::new().fg(Color::Green)),
                 Syntax::Plain | Syntax::Graphql => Line::raw(l.clone()),
             })
             .collect(),

@@ -36,4 +36,4 @@ pub use status::{
     HELP_GRAPHQL, HELP_GRPC, HELP_REST, HELP_WS, REPO_URL, VERSION, contribute_area,
     status_text_width,
 };
-pub use suggestions::suggestions_area;
+pub use suggestions::{suggestions_anchor, suggestions_area};

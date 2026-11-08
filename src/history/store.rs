@@ -9,8 +9,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use serde::{Deserialize, Serialize};
 
 use crate::client::{
-    GraphqlRequest, GrpcOutcome, GrpcRequest, GrpcStatus, Header, HttpRequest, HttpResponse, Kind,
-    Method, Outcome, Protocol, Request, SchemaSource, WsClose, WsMessage, WsOutcome, WsRequest,
+    Body, GraphqlRequest, GrpcOutcome, GrpcRequest, GrpcStatus, Header, HttpRequest, HttpResponse,
+    Kind, Method, Outcome, Protocol, Request, SchemaSource, WsClose, WsMessage, WsOutcome,
+    WsRequest,
 };
 
 /// Bodies larger than this are truncated before being stored.
@@ -182,7 +183,7 @@ impl History {
                     method: parse_method(id, &r.method)?,
                     url: r.url,
                     headers: headers(&r.request_headers)?,
-                    body: r.request_body,
+                    body: r.request_body.as_deref().map(Body::from_stored),
                 });
                 let outcome = match (r.status, r.error) {
                     (Some(status), _) => Outcome::Response(HttpResponse {
@@ -330,7 +331,10 @@ fn http_row<'a>(
         method: request.method.as_str().to_owned(),
         url: &request.url,
         request_headers: serde_json::to_string(&request.headers).expect("headers serialize"),
-        request_body: request.body.as_deref().map(|b| cap(b).to_owned()),
+        request_body: request
+            .body
+            .as_ref()
+            .map(|b| cap(&b.to_stored()).to_owned()),
         status: response.map(|r| i64::from(r.status)),
         response_headers: response
             .map(|r| serde_json::to_string(&r.headers).expect("headers serialize")),

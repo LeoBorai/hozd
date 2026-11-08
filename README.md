@@ -163,12 +163,42 @@ proto_include = ["~/work/protos"]
 | `Ctrl+P`          | Previous HTTP method (REST); open the method / operation picker (gRPC, GraphQL) |
 | `Ctrl+T`          | Switch the request box between Body and Headers (Metadata in gRPC) |
 | `Ctrl+G`          | Cycle the request between REST, gRPC, Connect, WebSocket and GraphQL |
+| `Ctrl+Y`          | REST: next body type (also a click on the type shown on the Body box's border) |
 | Drag (reading panel) | Select text; it is copied to the clipboard on release (`y` copies the selection, or everything if none) |
 | `Ctrl+E` / click the Logs box | Open the log in the reading panel (newest last) |
 | `Enter` (response focus) | Open the response body in the reading panel |
 | `PgUp` / `PgDn`   | Scroll the response body                 |
 | `y` (list focus)  | Copy the response body to the clipboard  |
 | `q` / `Ctrl+C`    | Quit                                     |
+
+### REST body types
+
+`Ctrl+Y` cycles the body type; the current one is shown on the right of the Body box's
+border. Every type sets its `Content-Type` unless you set that header yourself.
+
+| Type | Editor | `Content-Type` |
+| ---- | ------ | -------------- |
+| Text | free text | `text/plain` |
+| JSON | one row per field: key, value and type (string, number, boolean, null, object, array) | `application/json` |
+| JSON (RAW) | JSON typed by hand, with highlighting; the default | `application/json` |
+| Form URL Encoded | name and value rows, percent-encoded | `application/x-www-form-urlencoded` |
+| Multipart | name and value rows; a value starting with `@` is a file | `multipart/form-data` |
+| File | a single `@path` | `application/octet-stream` |
+
+- **`@` picks a file.** Typing `@` in a Multipart value or in the File input opens a menu of
+  the files and directories that continue the path (`~/` works): `Up`/`Down` pick, `Tab` (or
+  `Enter` on a picked row) accepts, a directory opens its content. A file is read when the
+  request is sent; a missing one is reported before anything goes out. To send a text that
+  starts with `@`, write `@@`.
+- **JSON rows.** `Enter` moves from the key to the value, then to the next row, and adds a
+  row after the last one (on an empty object or array it adds the first child). `Ctrl+R`
+  changes the row's type, `Space` flips a boolean, `Alt+Right` / `Alt+Left` nest a row into
+  the container above it or move it out, `Ctrl+D` removes a row with its children, and
+  `Alt+T` switches the document between an object and an array. Fields keep the order you
+  added them in.
+- Switching from JSON to JSON (RAW) or Text prints the document as indented text; switching
+  from JSON (RAW) or Text to JSON loads an object or array into rows.
+- Template files (`body = ...`) are JSON (RAW). History keeps the body type of each request.
 
 ### gRPC
 
