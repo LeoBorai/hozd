@@ -4,7 +4,8 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Paragraph, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 use crate::client::{BodyKind, Kind, Protocol};
 
@@ -31,6 +32,7 @@ pub(crate) fn draw_request_box(
     );
     let labels = request_tab_labels(
         request.headers.len(),
+        app.params_count(request, previewing),
         request.kind,
         app.panels()
             .iter()
@@ -114,6 +116,7 @@ pub(crate) fn draw_request_box(
                 files: false,
                 value: "Value",
                 add: "+ add param (Enter on the last value, Ctrl+D removes a row)",
+                from_start: true,
             },
         ),
         (RequestTab::Body, false) if request.kind == Kind::Http => {
@@ -158,6 +161,7 @@ fn draw_http_body(frame: &mut Frame, app: &App, area: Rect) {
                 files: false,
                 value: "Value",
                 add: "+ add field (Enter on the last value, Ctrl+D removes a row)",
+                from_start: false,
             },
         ),
         BodyKind::Multipart => draw_pair_rows(
@@ -170,6 +174,7 @@ fn draw_http_body(frame: &mut Frame, app: &App, area: Rect) {
                 files: true,
                 value: "Value or @file",
                 add: "+ add part (@ picks a file, Ctrl+D removes a row)",
+                from_start: false,
             },
         ),
         BodyKind::File => {
@@ -298,6 +303,9 @@ struct Pairs {
     files: bool,
     value: &'static str,
     add: &'static str,
+    /// Whether an input that does not have the cursor shows the start of a long text
+    /// (with `…`) instead of the end, so nothing reads as missing.
+    from_start: bool,
 }
 
 /// The header inputs: name `:` value, one row each, then the "add header" line.
@@ -312,6 +320,7 @@ pub(crate) fn draw_header_rows(frame: &mut Frame, app: &App, area: Rect) {
             files: false,
             value: "Value",
             add: "+ add header (Enter on the last value, Ctrl+D removes a row)",
+            from_start: false,
         },
     );
 }
@@ -350,6 +359,20 @@ fn draw_pair_rows(
                     Paragraph::new(Line::styled(placeholder, Style::new().fg(Color::DarkGray))),
                     rect,
                 );
+                continue;
+            }
+            let text = ta.lines()[0].clone();
+            if look.from_start && !here && text.width() > rect.width as usize {
+                let keep = (rect.width as usize).saturating_sub(1);
+                let mut shown = String::new();
+                for c in text.chars() {
+                    if shown.width() + c.to_string().width() > keep {
+                        break;
+                    }
+                    shown.push(c);
+                }
+                shown.push('…');
+                frame.render_widget(Paragraph::new(shown), rect);
                 continue;
             }
             let syntax = if col == Col::Name {
@@ -502,7 +525,7 @@ pub(crate) fn draw_http_preview(
         lines.push(Line::raw(""));
         lines.extend(body.lines().map(|l| Line::raw(l.to_owned())));
     }
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 /// `(host, request target)` of `url`; the scheme and fragment are not sent.

@@ -272,6 +272,7 @@ pub fn stored_row_map(app: &App) -> Vec<Option<usize>> {
 /// `" Headers (n) "` for GraphQL), joined by `|`.
 pub(crate) fn request_tab_labels(
     count: usize,
+    params: usize,
     kind: Kind,
     panel: usize,
 ) -> Vec<(RequestTab, String)> {
@@ -293,7 +294,14 @@ pub(crate) fn request_tab_labels(
         Kind::Http => vec![
             (RequestTab::Body, format!(" [{panel}] Body ")),
             (RequestTab::Headers, second),
-            (RequestTab::Params, " URL Params ".to_owned()),
+            (
+                RequestTab::Params,
+                if params == 0 {
+                    " URL Params ".to_owned()
+                } else {
+                    format!(" URL Params ({params}) ")
+                },
+            ),
         ],
         _ => vec![
             (RequestTab::Body, format!(" [{panel}] Body ")),
@@ -303,11 +311,12 @@ pub(crate) fn request_tab_labels(
 }
 
 /// Which request tab title is under `at`; titles sit on the box's top border, starting
-/// one column in. `header_count` must be the count shown in the title.
+/// one column in. `header_count` and `params` must be the counts shown in the titles.
 pub fn request_tab_at(
     body: Rect,
     at: Position,
     header_count: usize,
+    params: usize,
     kind: Kind,
     panel: usize,
 ) -> Option<RequestTab> {
@@ -315,7 +324,7 @@ pub fn request_tab_at(
         return None;
     }
     let mut offset = at.x.checked_sub(body.x + 1)? as usize;
-    for (tab, label) in request_tab_labels(header_count, kind, panel) {
+    for (tab, label) in request_tab_labels(header_count, params, kind, panel) {
         if offset < label.len() {
             return Some(tab);
         }

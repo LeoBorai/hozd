@@ -15,7 +15,7 @@ use crate::client::{
     GrpcOutcome, GrpcRequest, GrpcStatus, Header, HttpRequest, JsonValue, Kind, Method,
     OperationKind, Part, PartValue, Protocol, Request, Schema, SchemaSource, SharedGrpc,
     SharedHttp, SharedWs, Trace, TungsteniteWs, WsEvent, WsOutcome, WsRequest, introspect,
-    with_query,
+    split_query, with_query,
 };
 use crate::history::{History, HistoryEntry, Outcome, Summary};
 use crate::project::{Loaded, Template};
@@ -521,9 +521,35 @@ impl App {
         })
     }
 
+    /// Query parameters are edited in the "URL Params" tab only: whatever follows a `?` in
+    /// the address moves into the table.
+    fn absorb_query(&mut self) {
+        if self.kind != Kind::Http || !self.url_text().contains('?') {
+            return;
+        }
+        let (url, found) = split_query(&self.url_text());
+        let mut pairs = self.params.pairs_untrimmed(false).unwrap_or_default();
+        pairs.extend(found);
+        self.url = single_line(&url);
+        self.params = HeaderEditor::from_pairs(pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    }
+
+    /// The number shown next to the "URL Params" title: the table's rows while editing,
+    /// the query pairs of the URL while previewing a stored request.
+    pub fn params_count(&self, request: &RequestView, previewing: bool) -> usize {
+        if previewing {
+            let query = request.url.split('#').next().unwrap_or("");
+            query
+                .split_once('?')
+                .map_or(0, |(_, q)| q.split('&').filter(|p| !p.is_empty()).count())
+        } else {
+            self.params.pairs_untrimmed(false).map_or(0, |p| p.len())
+        }
+    }
+
     /// The URL as sent: the address with the query parameters encoded onto it.
     fn http_url(&self, strict: bool) -> Result<String, String> {
-        let params = self.params.pairs(strict)?;
+        let params = self.params.pairs_untrimmed(strict)?;
         Ok(with_query(self.url_text().trim(), &params))
     }
 
@@ -945,6 +971,14 @@ impl App {
     // ---- input ---------------------------------------------------------
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        self.key_inner(key);
+        // a query pasted or loaded into the address moves once the address loses focus
+        if self.focus != Focus::Url {
+            self.absorb_query();
+        }
+    }
+
+    fn key_inner(&mut self, key: KeyEvent) {
         self.handle_key_event(key);
         self.refresh_suggestions();
     }
@@ -1041,6 +1075,16 @@ impl App {
             Focus::List => self.list_key(key.code),
             Focus::Url => match key.code {
                 KeyCode::Enter => self.send(),
+                // the query belongs to the "URL Params" tab: `?` jumps there
+                KeyCode::Char('?')
+                    if self.kind == Kind::Http
+                        && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.request_tab = RequestTab::Params;
+                    self.params.row = self.params.rows.len() - 1;
+                    self.params.col = Col::Name;
+                    self.set_focus(Focus::Params);
+                }
                 _ => {
                     self.url.input(Input::from(key));
                 }
@@ -1694,6 +1738,7 @@ impl App {
 
     /// `screen` is the full terminal area the UI was last drawn into.
     pub fn handle_mouse(&mut self, event: MouseEvent, screen: Rect) {
+        self.absorb_query();
         self.handle_mouse_event(event, screen);
         self.refresh_suggestions();
     }
@@ -1886,11 +1931,14 @@ impl App {
                 self.last_response_click = Some(now);
             }
         } else if areas.body.contains(at) {
-            let view = self.view().request;
+            let current = self.view();
+            let previewing = current.previewing;
+            let view = current.request;
             if let Some(tab) = ui::request_tab_at(
                 areas.body,
                 at,
                 view.headers.len(),
+                self.params_count(&view, previewing),
                 view.kind,
                 self.panels().len() - 1,
             ) {
@@ -2120,6 +2168,7 @@ impl App {
         self.method = request.method;
         self.url = single_line(&request.url);
         self.params = HeaderEditor::default();
+        self.absorb_query();
         self.load_body(request.body.as_ref());
         self.headers = HeaderEditor::from_headers(&request.headers);
     }
@@ -2216,6 +2265,7 @@ impl App {
     // ---- background work ------------------------------------------------
 
     pub fn send(&mut self) {
+        self.absorb_query();
         if self.sending {
             self.status = Some("a request is already in flight".into());
             return;

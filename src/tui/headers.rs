@@ -137,13 +137,26 @@ impl HeaderEditor {
     /// name is an error when `strict` and skipped otherwise; the error names its 1-based
     /// number.
     pub fn pairs(&self, strict: bool) -> Result<Vec<(String, String)>, String> {
+        self.collect_pairs(strict, true)
+    }
+
+    /// Like [`pairs`](Self::pairs) but names are kept exactly as typed.
+    pub fn pairs_untrimmed(&self, strict: bool) -> Result<Vec<(String, String)>, String> {
+        self.collect_pairs(strict, false)
+    }
+
+    fn collect_pairs(&self, strict: bool, trim: bool) -> Result<Vec<(String, String)>, String> {
         let mut pairs = Vec::new();
         for (i, row) in self.rows.iter().enumerate() {
             if row.is_blank() {
                 continue;
             }
-            let name = row.name_text().trim().to_owned();
-            if name.is_empty() {
+            let name = if trim {
+                row.name_text().trim().to_owned()
+            } else {
+                row.name_text()
+            };
+            if name.trim().is_empty() {
                 if strict {
                     return Err(format!("row {}: the name is empty", i + 1));
                 }

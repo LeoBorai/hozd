@@ -872,6 +872,7 @@ async fn url_params_are_encoded_into_the_sent_url_and_shown_in_the_http_view() {
     // the address box keeps the plain URL
     assert_eq!(h.app.url_text(), "http://example.com/a");
     let out = text(&render(&h.app, 120, 40));
+    assert!(out.contains("URL Params (1)"), "{out}");
     assert!(out.contains("GET /a?q=a%20b%26c HTTP/1.1"), "{out}");
     assert!(out.contains("Host: example.com"), "{out}");
     assert_eq!(
@@ -2637,7 +2638,10 @@ async fn question_mark_types_in_text_fields_and_f1_opens_the_menu() {
     assert_eq!(h.app.focus, Focus::Url);
     h.app.handle_key(key(KeyCode::Char('?')));
     assert_eq!(h.app.help, None);
-    assert!(h.app.url_text().contains('?'));
+    // the address is a text field, so no menu; in REST the `?` opens the URL params
+    assert_eq!(h.app.focus, Focus::Params);
+    h.app.handle_key(key(KeyCode::Char('?')));
+    assert_eq!(h.app.help, None);
     h.app.handle_key(key(KeyCode::F(1)));
     assert_eq!(h.app.help, Some(0));
 }
@@ -3042,4 +3046,77 @@ async fn every_mode_shows_the_http_view_of_its_request() {
         assert!(out.contains(" HTTP "), "{kind:?}: {out}");
         assert!(out.contains(expect), "{kind:?}: {out}");
     }
+}
+
+#[tokio::test]
+async fn a_query_in_the_address_moves_into_the_url_params_tab() {
+    let mut h = harness().await;
+    h.app.load_request(&Request::Http(HttpRequest {
+        url: "http://example.com/a?q=a%20b&x=1".into(),
+        ..Default::default()
+    }));
+    assert_eq!(h.app.url_text(), "http://example.com/a");
+    assert_eq!(
+        h.app.params.pairs(false).unwrap(),
+        vec![("q".into(), "a b".into()), ("x".into(), "1".into())]
+    );
+    assert_eq!(
+        h.app.try_request().unwrap().url,
+        "http://example.com/a?q=a%20b&x=1"
+    );
+    let out = text(&render(&h.app, 120, 40));
+    assert!(out.contains("URL Params (2)"), "{out}");
+}
+
+#[tokio::test]
+async fn typing_a_question_mark_in_the_address_jumps_to_url_params() {
+    let mut h = harness().await;
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "http://example.com/a?");
+    assert_eq!(h.app.url_text(), "http://example.com/a");
+    assert_eq!(
+        (h.app.request_tab, h.app.focus),
+        (RequestTab::Params, Focus::Params)
+    );
+    type_text(&mut h.app, "q");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "1");
+    assert_eq!(h.app.try_request().unwrap().url, "http://example.com/a?q=1");
+}
+
+#[tokio::test]
+async fn url_params_are_never_trimmed() {
+    let mut h = harness().await;
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "http://example.com");
+    h.app.handle_key(key(KeyCode::Tab));
+    h.app.handle_key(ctrl('t'));
+    h.app.handle_key(ctrl('t'));
+    type_text(&mut h.app, " a ");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, " b ");
+    assert_eq!(
+        h.app.try_request().unwrap().url,
+        "http://example.com?%20a%20=%20b%20"
+    );
+}
+
+#[tokio::test]
+async fn long_url_params_are_not_hidden() {
+    let mut h = harness().await;
+    h.app.load_request(&Request::Http(HttpRequest {
+        url: "http://example.com/a?delta=a_very_long_value_that_goes_on_and_on_and_on_forever_and_ever&e=5".into(),
+        ..Default::default()
+    }));
+    h.app.handle_key(ctrl('t'));
+    h.app.handle_key(ctrl('t'));
+    let out = text(&render(&h.app, 80, 30));
+    // the table shows the start of a long value, marked as cut
+    assert!(
+        out.contains("delta") && out.contains("a_very_long_value"),
+        "{out}"
+    );
+    assert!(out.contains('…'), "{out}");
+    // the HTTP view wraps instead of cutting, so the whole value is readable
+    assert!(out.contains("and_on_forever_and_ever&e=5"), "{out}");
 }
