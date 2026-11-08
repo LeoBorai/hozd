@@ -61,4 +61,7 @@ pub(crate) fn draw_center(
         draw_operation(frame, app, request, previewing, center.rpc);
     }
     draw_request_box(frame, app, request, previewing, center.body);
+    if center.preview.height > 0 {
+        draw_http_preview(frame, request, center.preview);
+    }
 }

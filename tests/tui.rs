@@ -844,7 +844,39 @@ async fn ctrl_t_toggles_between_body_and_headers() {
     h.app.handle_key(ctrl('t'));
     assert_eq!(
         (h.app.request_tab, h.app.focus),
+        (RequestTab::Params, Focus::Params)
+    );
+    let out = text(&render(&h.app, 120, 30));
+    assert!(out.contains("URL Params"), "{out}");
+
+    h.app.handle_key(ctrl('t'));
+    assert_eq!(
+        (h.app.request_tab, h.app.focus),
         (RequestTab::Body, Focus::Body)
+    );
+}
+
+#[tokio::test]
+async fn url_params_are_encoded_into_the_sent_url_and_shown_in_the_http_view() {
+    let mut h = harness().await;
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "http://example.com/a");
+    h.app.handle_key(key(KeyCode::Tab));
+    h.app.handle_key(ctrl('t'));
+    h.app.handle_key(ctrl('t'));
+    assert_eq!(h.app.focus, Focus::Params);
+    type_text(&mut h.app, "q");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "a b&c");
+
+    // the address box keeps the plain URL
+    assert_eq!(h.app.url_text(), "http://example.com/a");
+    let out = text(&render(&h.app, 120, 40));
+    assert!(out.contains("GET /a?q=a%20b%26c HTTP/1.1"), "{out}");
+    assert!(out.contains("Host: example.com"), "{out}");
+    assert_eq!(
+        h.app.try_request().unwrap().url,
+        "http://example.com/a?q=a%20b%26c"
     );
 }
 
@@ -953,6 +985,7 @@ async fn invalid_header_line_blocks_send_and_points_at_the_line() {
     type_text(&mut h.app, "bad name"); // a space is not allowed in a name
     h.app.handle_key(key(KeyCode::Tab)); // leave the editor
     h.app.handle_key(key(KeyCode::Tab));
+    h.app.handle_key(ctrl('t'));
     h.app.handle_key(ctrl('t')); // back to Body to prove the failure switches tabs
     assert_eq!(h.app.request_tab, RequestTab::Body);
 
@@ -2994,4 +3027,19 @@ async fn ctrl_y_is_for_rest_only() {
     h.app.set_kind(hozd::client::Kind::Ws);
     h.app.handle_key(ctrl('y'));
     assert_eq!(h.app.body_kind, BodyKind::JsonRaw);
+}
+
+#[tokio::test]
+async fn every_mode_shows_the_http_view_of_its_request() {
+    let mut h = harness().await;
+    for (kind, expect) in [
+        (Kind::Grpc, "HTTP/2"),
+        (Kind::Graphql, "POST / HTTP/1.1"),
+        (Kind::Ws, "Upgrade: websocket"),
+    ] {
+        h.app.set_kind(kind);
+        let out = text(&render(&h.app, 120, 40));
+        assert!(out.contains(" HTTP "), "{kind:?}: {out}");
+        assert!(out.contains(expect), "{kind:?}: {out}");
+    }
 }

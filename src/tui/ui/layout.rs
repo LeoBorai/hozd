@@ -35,6 +35,8 @@ pub struct Areas {
     /// The method picker box; gRPC mode only.
     pub rpc: Rect,
     pub body: Rect,
+    /// The raw HTTP view under the body; REST only.
+    pub preview: Rect,
     pub response: Rect,
     pub response_body: Rect,
 }
@@ -62,7 +64,12 @@ pub(crate) struct Center {
     pub(crate) schema: Rect,
     pub(crate) rpc: Rect,
     pub(crate) body: Rect,
+    /// The raw HTTP view of the request.
+    pub(crate) preview: Rect,
 }
+
+/// Rows of the raw HTTP view under the request box, borders included.
+const PREVIEW_HEIGHT: u16 = 10;
 
 pub(crate) fn center_areas(center: Rect, kind: Kind) -> Center {
     let top_row = |top: Rect| {
@@ -70,8 +77,12 @@ pub(crate) fn center_areas(center: Rect, kind: Kind) -> Center {
     };
     match kind {
         Kind::Http | Kind::Ws => {
-            let [top, body] =
-                Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(center);
+            let [top, body, preview] = Layout::vertical([
+                Constraint::Length(3),
+                Constraint::Min(3),
+                Constraint::Length(PREVIEW_HEIGHT),
+            ])
+            .areas(center);
             let [method, url] = top_row(top);
             Center {
                 method,
@@ -79,13 +90,15 @@ pub(crate) fn center_areas(center: Rect, kind: Kind) -> Center {
                 schema: Rect::ZERO,
                 rpc: Rect::ZERO,
                 body,
+                preview,
             }
         }
         Kind::Graphql => {
-            let [top, rpc, body] = Layout::vertical([
+            let [top, rpc, body, preview] = Layout::vertical([
                 Constraint::Length(3),
                 Constraint::Length(3),
                 Constraint::Min(3),
+                Constraint::Length(PREVIEW_HEIGHT),
             ])
             .areas(center);
             let [method, url] = top_row(top);
@@ -95,14 +108,16 @@ pub(crate) fn center_areas(center: Rect, kind: Kind) -> Center {
                 schema: Rect::ZERO,
                 rpc,
                 body,
+                preview,
             }
         }
         Kind::Grpc => {
-            let [top, schema, rpc, body] = Layout::vertical([
+            let [top, schema, rpc, body, preview] = Layout::vertical([
                 Constraint::Length(3),
                 Constraint::Length(3),
                 Constraint::Length(3),
                 Constraint::Min(3),
+                Constraint::Length(PREVIEW_HEIGHT),
             ])
             .areas(center);
             let [method, url] = top_row(top);
@@ -112,6 +127,7 @@ pub(crate) fn center_areas(center: Rect, kind: Kind) -> Center {
                 schema,
                 rpc,
                 body,
+                preview,
             }
         }
     }
@@ -190,6 +206,7 @@ pub fn areas_for(area: Rect, kind: Kind) -> Areas {
         schema: center.schema,
         rpc: center.rpc,
         body: center.body,
+        preview: center.preview,
         response,
         response_body,
     }
@@ -272,6 +289,11 @@ pub(crate) fn request_tab_labels(
             (RequestTab::Body, format!(" [{panel}] Query ")),
             (RequestTab::Variables, " Variables ".to_owned()),
             (RequestTab::Headers, second),
+        ],
+        Kind::Http => vec![
+            (RequestTab::Body, format!(" [{panel}] Body ")),
+            (RequestTab::Headers, second),
+            (RequestTab::Params, " URL Params ".to_owned()),
         ],
         _ => vec![
             (RequestTab::Body, format!(" [{panel}] Body ")),
