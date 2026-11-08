@@ -2,6 +2,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+pub use auth::{
+    Jwt, JwtError, Verification, basic_value, parse_basic, parse_token, secret_bytes, token_value,
+};
 pub use body::{
     Body, BodyError, BodyKind, Encoded, Field, JsonValue, Part, PartValue, expand_home,
 };
@@ -25,6 +28,7 @@ pub use ws::{
 
 pub mod grpc;
 
+mod auth;
 mod body;
 mod common;
 mod fake;

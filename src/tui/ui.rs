@@ -8,8 +8,8 @@ mod components;
 mod layout;
 
 pub use components::{
-    HELP_GRAPHQL, HELP_GRPC, HELP_REST, HELP_WS, REPO_URL, VERSION, contribute_area,
-    status_text_width, suggestions_anchor, suggestions_area,
+    AuthLayout, HELP_GRAPHQL, HELP_GRPC, HELP_REST, HELP_WS, REPO_URL, VERSION, auth_layout,
+    contribute_area, status_text_width, suggestions_anchor, suggestions_area, token_index,
 };
 pub use layout::*;
 pub(crate) use layout::{center_areas, main_area};

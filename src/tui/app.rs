@@ -20,6 +20,7 @@ use crate::client::{
 use crate::history::{History, HistoryEntry, Outcome, Summary};
 use crate::project::{Loaded, Template};
 
+use super::auth::{self, AuthEditor, Scheme};
 use super::commands::{Action, Command, commands_for};
 use super::complete::{self, Suggestion};
 use super::headers::{Col, HeaderEditor};
@@ -51,6 +52,8 @@ pub enum Focus {
     Headers,
     /// REST editor: the URL query parameters.
     Params,
+    /// REST editor: the `Authorization` header.
+    Auth,
     /// gRPC editor: the schema source box.
     Schema,
     /// gRPC editor: the method box; `Enter` opens the picker.
@@ -68,6 +71,8 @@ pub enum RequestTab {
     Headers,
     /// REST only.
     Params,
+    /// REST only.
+    Auth,
 }
 
 /// What a loaded schema was loaded for; it is dropped when the editor stops matching.
@@ -319,6 +324,8 @@ pub struct App {
     pub headers: HeaderEditor,
     /// REST URL query parameters, encoded into the URL when the request is built.
     pub params: HeaderEditor,
+    /// REST `Authorization` header, put together when the request is built.
+    pub auth: AuthEditor,
     pub request_tab: RequestTab,
     /// GraphQL editor: the variables, a JSON object.
     pub variables: TextArea<'static>,
@@ -427,6 +434,7 @@ impl App {
             file: single_line(""),
             headers: HeaderEditor::default(),
             params: HeaderEditor::default(),
+            auth: AuthEditor::default(),
             request_tab: RequestTab::Body,
             variables: TextArea::default(),
             graphql: None,
@@ -507,7 +515,8 @@ impl App {
 
     /// Like [`editor_request`](Self::editor_request) but fails on an invalid header line.
     pub fn try_request(&self) -> Result<HttpRequest, String> {
-        let headers = self.headers.parse()?;
+        let mut headers = self.headers.parse()?;
+        self.add_authorization(&mut headers);
         let url = self.http_url(true).map_err(|e| format!("URL param {e}"))?;
         let body = self.build_body(true)?;
         if let Some(body) = &body {
@@ -553,7 +562,50 @@ impl App {
         Ok(with_query(self.url_text().trim(), &params))
     }
 
-    fn build_request(&self, headers: Vec<Header>) -> HttpRequest {
+    /// Adds the Auth tab's `Authorization` header unless the Headers tab has one.
+    fn add_authorization(&self, headers: &mut Vec<Header>) {
+        if self.kind == Kind::Http
+            && let Some(value) = self.auth.header_value()
+            && !headers
+                .iter()
+                .any(|h| h.name.eq_ignore_ascii_case("authorization"))
+        {
+            headers.push(Header::new("Authorization", value));
+        }
+    }
+
+    /// The number shown next to the "Headers" title. The Auth tab's header is not counted
+    /// while editing.
+    pub fn headers_count(&self, request: &RequestView, previewing: bool) -> usize {
+        if !previewing && request.kind == Kind::Http {
+            self.headers.parse_lenient().len()
+        } else {
+            request.headers.len()
+        }
+    }
+
+    /// The label next to "Auth" in the tab title: the scheme in use, empty for none.
+    pub fn auth_label(&self, request: &RequestView, previewing: bool) -> &'static str {
+        let scheme = if previewing {
+            request
+                .headers
+                .iter()
+                .find(|h| h.name.eq_ignore_ascii_case("authorization"))
+                .map_or(Scheme::None, |h| AuthEditor::from_header(&h.value).scheme)
+        } else if self.auth.header_value().is_some() {
+            self.auth.scheme
+        } else {
+            Scheme::None
+        };
+        match scheme {
+            Scheme::None => "",
+            Scheme::Raw => "Text",
+            other => other.label(),
+        }
+    }
+
+    fn build_request(&self, mut headers: Vec<Header>) -> HttpRequest {
+        self.add_authorization(&mut headers);
         HttpRequest {
             method: self.method,
             url: self.http_url(false).unwrap_or_default(),
@@ -785,6 +837,7 @@ impl App {
             RequestTab::Variables => Focus::Variables,
             RequestTab::Headers => Focus::Headers,
             RequestTab::Params => Focus::Params,
+            RequestTab::Auth => Focus::Auth,
         }
     }
 
@@ -804,7 +857,7 @@ impl App {
         self.request_tab = tab;
         if matches!(
             self.focus,
-            Focus::Body | Focus::Variables | Focus::Headers | Focus::Params
+            Focus::Body | Focus::Variables | Focus::Headers | Focus::Params | Focus::Auth
         ) {
             self.focus = self.editor_focus();
         }
@@ -1007,6 +1060,7 @@ impl App {
                 | Focus::Variables
                 | Focus::Headers
                 | Focus::Params
+                | Focus::Auth
                 | Focus::Schema
         );
         if key.code == KeyCode::F(1) || (key.code == KeyCode::Char('?') && !typing && !ctrl) {
@@ -1099,6 +1153,7 @@ impl App {
             Focus::Params => {
                 self.params.key(key);
             }
+            Focus::Auth => self.auth.key(key),
             Focus::Schema => self.schema_input(key),
             Focus::Method => self.method_key(key.code),
             Focus::Response => self.response_key(key.code),
@@ -1674,6 +1729,9 @@ impl App {
         if kind != Kind::Graphql && self.request_tab == RequestTab::Variables {
             self.set_request_tab(RequestTab::Body);
         }
+        if kind != Kind::Http && matches!(self.request_tab, RequestTab::Params | RequestTab::Auth) {
+            self.set_request_tab(RequestTab::Body);
+        }
     }
 
     /// gRPC editor: reflection or a schema file.
@@ -1694,7 +1752,8 @@ impl App {
             (RequestTab::Variables, _) => RequestTab::Headers,
             (RequestTab::Headers, Kind::Http) => RequestTab::Params,
             (RequestTab::Headers, _) => RequestTab::Body,
-            (RequestTab::Params, _) => RequestTab::Body,
+            (RequestTab::Params, _) => RequestTab::Auth,
+            (RequestTab::Auth, _) => RequestTab::Body,
         });
     }
 
@@ -1937,8 +1996,9 @@ impl App {
             if let Some(tab) = ui::request_tab_at(
                 areas.body,
                 at,
-                view.headers.len(),
+                self.headers_count(&view, previewing),
                 self.params_count(&view, previewing),
+                self.auth_label(&view, previewing),
                 view.kind,
                 self.panels().len() - 1,
             ) {
@@ -1978,6 +2038,30 @@ impl App {
                 }
                 RequestTab::Headers => self.click_headers(at, inner),
                 RequestTab::Params => click_pairs(&mut self.params, at, inner),
+                RequestTab::Auth => self.click_auth(at, inner),
+            }
+        }
+    }
+
+    /// A click in the Auth tab picks a scheme or puts the cursor in an input.
+    fn click_auth(&mut self, at: Position, inner: Rect) {
+        let layout = ui::auth_layout(inner, &self.auth);
+        if let Some((scheme, _)) = layout.schemes.iter().find(|(_, r)| r.contains(at)) {
+            return self.auth.set_scheme(*scheme);
+        }
+        for (field, rect) in &layout.fields {
+            if rect.contains(at) {
+                let x = match self.auth.input(*field) {
+                    Some(ta) if *field == auth::Field::Token => {
+                        ui::token_index(*rect, at, ta.cursor().1)
+                    }
+                    Some(ta) => {
+                        let (_, scroll) = ui::editor_scroll(cursor_of(ta), *rect);
+                        (at.x - rect.x) as usize + scroll
+                    }
+                    None => 0,
+                };
+                return self.auth.select(*field, x);
             }
         }
     }
@@ -2091,6 +2175,7 @@ impl App {
         self.variables = TextArea::default();
         self.headers = HeaderEditor::default();
         self.params = HeaderEditor::default();
+        self.auth = AuthEditor::default();
         self.schema_path = single_line("");
         self.schema_mode = SchemaMode::Reflection;
         self.suggestions = Suggestions::default();
@@ -2170,7 +2255,16 @@ impl App {
         self.params = HeaderEditor::default();
         self.absorb_query();
         self.load_body(request.body.as_ref());
-        self.headers = HeaderEditor::from_headers(&request.headers);
+        // the Authorization header lives in the Auth tab
+        let (auth, headers): (Vec<&Header>, Vec<&Header>) = request
+            .headers
+            .iter()
+            .partition(|h| h.name.eq_ignore_ascii_case("authorization"));
+        self.auth = auth
+            .first()
+            .map_or_else(AuthEditor::default, |h| AuthEditor::from_header(&h.value));
+        let headers: Vec<Header> = headers.into_iter().cloned().collect();
+        self.headers = HeaderEditor::from_headers(&headers);
     }
 
     /// Fills the REST body editors from `body`; the other kinds start empty.
@@ -2606,7 +2700,9 @@ fn next_focus(f: Focus, editor: Focus, kind: Kind) -> Focus {
         (Focus::Url, Kind::Graphql) => Focus::Method,
         (Focus::Schema, _) => Focus::Method,
         (Focus::Method, _) => editor,
-        (Focus::Body | Focus::Variables | Focus::Headers | Focus::Params, _) => Focus::Response,
+        (Focus::Body | Focus::Variables | Focus::Headers | Focus::Params | Focus::Auth, _) => {
+            Focus::Response
+        }
         (Focus::Response, _) => Focus::List,
     }
 }
@@ -2619,11 +2715,11 @@ fn prev_focus(f: Focus, editor: Focus, kind: Kind) -> Focus {
         (Focus::Method, Kind::Graphql) => Focus::Url,
         (Focus::Method, _) => Focus::Schema,
         (
-            Focus::Body | Focus::Variables | Focus::Headers | Focus::Params,
+            Focus::Body | Focus::Variables | Focus::Headers | Focus::Params | Focus::Auth,
             Kind::Http | Kind::Ws,
         ) => Focus::Url,
         (
-            Focus::Body | Focus::Variables | Focus::Headers | Focus::Params,
+            Focus::Body | Focus::Variables | Focus::Headers | Focus::Params | Focus::Auth,
             Kind::Grpc | Kind::Graphql,
         ) => Focus::Method,
         (Focus::Response, _) => editor,

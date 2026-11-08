@@ -1,6 +1,7 @@
 //! Atomic TUI components: each draws one box or popup from the app state.
 
 mod address;
+mod auth;
 mod center;
 mod editor;
 mod frame;
@@ -17,6 +18,7 @@ mod status;
 mod suggestions;
 
 pub(crate) use address::*;
+pub(crate) use auth::*;
 pub(crate) use center::*;
 pub(crate) use editor::*;
 pub(crate) use frame::*;
@@ -32,6 +34,7 @@ pub(crate) use spinner::*;
 pub(crate) use status::*;
 pub(crate) use suggestions::*;
 
+pub use auth::{AuthLayout, auth_layout, token_index};
 pub use status::{
     HELP_GRAPHQL, HELP_GRPC, HELP_REST, HELP_WS, REPO_URL, VERSION, contribute_area,
     status_text_width,

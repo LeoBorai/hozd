@@ -273,6 +273,7 @@ pub fn stored_row_map(app: &App) -> Vec<Option<usize>> {
 pub(crate) fn request_tab_labels(
     count: usize,
     params: usize,
+    auth: &str,
     kind: Kind,
     panel: usize,
 ) -> Vec<(RequestTab, String)> {
@@ -302,6 +303,14 @@ pub(crate) fn request_tab_labels(
                     format!(" URL Params ({params}) ")
                 },
             ),
+            (
+                RequestTab::Auth,
+                if auth.is_empty() {
+                    " Auth ".to_owned()
+                } else {
+                    format!(" Auth ({auth}) ")
+                },
+            ),
         ],
         _ => vec![
             (RequestTab::Body, format!(" [{panel}] Body ")),
@@ -317,6 +326,7 @@ pub fn request_tab_at(
     at: Position,
     header_count: usize,
     params: usize,
+    auth: &str,
     kind: Kind,
     panel: usize,
 ) -> Option<RequestTab> {
@@ -324,7 +334,7 @@ pub fn request_tab_at(
         return None;
     }
     let mut offset = at.x.checked_sub(body.x + 1)? as usize;
-    for (tab, label) in request_tab_labels(header_count, params, kind, panel) {
+    for (tab, label) in request_tab_labels(header_count, params, auth, kind, panel) {
         if offset < label.len() {
             return Some(tab);
         }
