@@ -16,6 +16,7 @@ pub mod history;
 pub mod paths;
 pub mod project;
 pub mod tui;
+pub mod vars;
 
 /// Starts hozd: resolves the home directory, opens history and runs the TUI.
 pub async fn run() -> anyhow::Result<()> {

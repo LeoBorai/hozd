@@ -19,6 +19,8 @@ pub enum Action {
     ToggleSchemaSource,
     ToggleTls,
     OpenLog,
+    ToggleVariablesPanel,
+    ToggleVars,
     Quit,
 }
 
@@ -139,6 +141,18 @@ pub const COMMANDS: &[Command] = &[
         Some(Kind::Grpc),
     ),
     cmd("<ctrl+e>", "Open the log", Action::OpenLog, None),
+    cmd(
+        "<ctrl+v>",
+        "Switch the left bottom panel between Logs and Variables",
+        Action::ToggleVariablesPanel,
+        None,
+    ),
+    cmd(
+        "<ctrl+b>",
+        "Toggle $variables in the request body",
+        Action::ToggleVars,
+        Some(Kind::Http),
+    ),
     cmd("<ctrl+c>", "Quit", Action::Quit, None),
 ];
 
