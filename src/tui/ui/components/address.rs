@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::client::{Kind, Protocol};
+use crate::client::Kind;
 
 use crate::tui::app::{App, Focus};
 
@@ -33,11 +33,10 @@ pub(crate) fn draw_address(
     let selected = Style::new()
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         .fg(Color::Yellow);
-    let (rest_style, grpc_style, connect_style) = match (request.kind, request.grpc.protocol) {
-        (Kind::Http, _) => (selected, Style::new(), Style::new()),
-        (Kind::Grpc, Protocol::Grpc) => (Style::new(), selected, Style::new()),
-        (Kind::Grpc, Protocol::Connect) => (Style::new(), Style::new(), selected),
-        (Kind::Ws | Kind::Graphql, _) => (Style::new(), Style::new(), Style::new()),
+    let (rest_style, grpc_style) = match request.kind {
+        Kind::Http => (selected, Style::new()),
+        Kind::Grpc => (Style::new(), selected),
+        Kind::Ws | Kind::Graphql => (Style::new(), Style::new()),
     };
     let graphql_style = if request.kind == Kind::Graphql {
         selected
@@ -68,13 +67,11 @@ pub(crate) fn draw_address(
             Span::raw(" "),
             Span::styled("REST", rest_style),
             Span::raw("|"),
+            Span::styled("GQL", graphql_style),
+            Span::raw("|"),
             Span::styled("gRPC", grpc_style),
             Span::raw("|"),
-            Span::styled("Connect", connect_style),
-            Span::raw("|"),
             Span::styled("WS", ws_style),
-            Span::raw("|"),
-            Span::styled("GQL", graphql_style),
             Span::raw(" "),
         ])
         .right_aligned(),

@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Tabs};
 
-use crate::client::{Kind, Method, Protocol, status_name};
+use crate::client::{Kind, Method, status_name};
 use crate::project::TemplateKind;
 
 use crate::tui::app::{App, Focus, Tab};
@@ -83,9 +83,6 @@ pub(crate) fn stored_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) 
             Span::raw("  "),
             match &t.template.kind {
                 TemplateKind::Http(h) => method_span(h.method),
-                TemplateKind::Grpc(g) if g.protocol == Protocol::Connect => {
-                    Span::styled("Connect", Style::new().fg(Color::Cyan))
-                }
                 TemplateKind::Grpc(_) => Span::styled("gRPC  ", Style::new().fg(Color::Magenta)),
                 TemplateKind::Ws(_) => Span::styled("WS    ", Style::new().fg(Color::Green)),
                 TemplateKind::Graphql(_) => {

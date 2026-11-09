@@ -2,7 +2,7 @@
 
 use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
 
-use crate::client::{BodyKind, Kind, Protocol};
+use crate::client::{BodyKind, Kind};
 use crate::tui::app::{App, RequestTab, Tab};
 
 /// Left, center and right panels on a 12-column grid: 3-6-3.
@@ -213,11 +213,11 @@ pub fn areas_for(area: Rect, kind: Kind) -> Areas {
 }
 
 /// The kind selector in the top border of the URL box, right-aligned.
-pub(crate) const KIND_LABEL: &str = " REST|gRPC|Connect|WS|GQL ";
+pub(crate) const KIND_LABEL: &str = " REST|GQL|gRPC|WS ";
 
 /// Which kind label sits under `at`: the selector is drawn in the top border of the URL
 /// box (`url` is its outer rect), right-aligned and one column short of the corner.
-pub fn kind_at(url: Rect, at: Position) -> Option<(Kind, Protocol)> {
+pub fn kind_at(url: Rect, at: Position) -> Option<Kind> {
     if at.y != url.y {
         return None;
     }
@@ -225,11 +225,10 @@ pub fn kind_at(url: Rect, at: Position) -> Option<(Kind, Protocol)> {
     let start = url.right().checked_sub(1 + width)?;
     let offset = at.x.checked_sub(start)?;
     match offset {
-        o if o < 6 => Some((Kind::Http, Protocol::Grpc)),
-        o if o < 11 => Some((Kind::Grpc, Protocol::Grpc)),
-        o if o < 19 => Some((Kind::Grpc, Protocol::Connect)),
-        o if o < 22 => Some((Kind::Ws, Protocol::Grpc)),
-        o if o < width => Some((Kind::Graphql, Protocol::Grpc)),
+        o if o < 6 => Some(Kind::Http),
+        o if o < 10 => Some(Kind::Graphql),
+        o if o < 15 => Some(Kind::Grpc),
+        o if o < width => Some(Kind::Ws),
         _ => None,
     }
 }

@@ -97,7 +97,6 @@ authorization = "Bearer token"
 | `method`     | `package.Service/Method`                                                     |
 | `reflection` | `true` to ask the server for its schema (`v1`, falling back to `v1alpha`)    |
 | `schema`     | Alternative to `reflection`: path of a `.proto` file or a compiled descriptor set (`.bin`, `.pb`, `.desc`), relative to the template file |
-| `protocol`   | `"grpc"` (default) or `"connect"` for ConnectRPC                              |
 | `insecure`   | `true` to skip TLS certificate verification (self-signed development servers) |
 | `[metadata]` | gRPC request metadata, like HTTP headers                                     |
 | `body`       | A JSON object; for client and bidirectional streaming a JSON array, one element per message |
@@ -163,7 +162,7 @@ proto_include = ["~/work/protos"]
 | `Ctrl+P`          | Previous HTTP method (REST); open the method / operation picker (gRPC, GraphQL) |
 | `Ctrl+T`          | Switch the request box between Body and Headers (Metadata in gRPC); REST also has URL Params and Auth |
 | `Ctrl+R`          | Auth tab: switch scheme (None, Basic, JWT, Free text)              |
-| `Ctrl+G`          | Cycle the request between REST, gRPC, Connect, WebSocket and GraphQL |
+| `Ctrl+G`          | Cycle the request between REST, GraphQL, gRPC and WebSocket |
 | `Ctrl+Y`          | REST: next body type (also a click on the type shown on the Body box's border) |
 | Drag (reading panel) | Select text; it is copied to the clipboard on release (`y` copies the selection, or everything if none) |
 | `Ctrl+E` / click the Logs box | Open the log in the reading panel (newest last) |
@@ -220,9 +219,6 @@ Three more boxes appear: the schema source, the method, and the TLS state.
 4. `Ctrl+S` sends. Unary and server streaming take a JSON object; client and bidirectional
    streaming take a JSON array, one element per message, sent in one go. Responses stream
    in as they arrive, numbered; `Ctrl+X` cancels the call (status `CANCELLED`).
-
-The `Connect` tab (`Ctrl+G` cycles REST, gRPC, Connect) selects **ConnectRPC** (JSON over HTTP; unary and server streaming
-only, no client or bidirectional streaming). Schema loading is unchanged: reflection or a file.
 
 ### GraphQL
 

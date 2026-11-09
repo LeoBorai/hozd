@@ -206,6 +206,7 @@ async fn the_schema_file_input_suggests_paths_and_tab_accepts() {
 
     let mut h = harness().await;
     h.app.handle_key(ctrl('g'));
+    h.app.handle_key(ctrl('g'));
     h.app.handle_key(ctrl('o')); // file mode, focus on the path input
     assert_eq!(h.app.focus, Focus::Schema);
     type_text(&mut h.app, &format!("{root}/d"));
@@ -1404,7 +1405,7 @@ async fn error_messages_open_too() {
 
 // ---- gRPC mode: kind toggle and loading ------------------------------------------
 
-use hozd::client::{GrpcRequest, Kind, Protocol, SchemaSource};
+use hozd::client::{GrpcRequest, Kind, SchemaSource};
 use ratatui_textarea::TextArea;
 
 fn grpc_request() -> GrpcRequest {
@@ -1413,7 +1414,6 @@ fn grpc_request() -> GrpcRequest {
         method: "user.v1.UserService/GetUser".into(),
         schema: SchemaSource::File("api/user.proto".into()),
         insecure: true,
-        protocol: Default::default(),
         metadata: vec![Header::new("authorization", "Bearer t")],
         body: Some("{\n  \"id\": 7\n}".into()),
     }
@@ -1432,6 +1432,10 @@ async fn ctrl_g_switches_kind_keeping_address_body_and_headers() {
     assert_eq!(h.app.kind, Kind::Http);
 
     h.app.handle_key(ctrl('g'));
+    assert_eq!(h.app.kind, Kind::Graphql);
+    assert_eq!(h.app.url_text(), url);
+
+    h.app.handle_key(ctrl('g'));
     assert_eq!(h.app.kind, Kind::Grpc);
     assert_eq!(h.app.url_text(), url, "the URL becomes the address");
     assert_eq!(lines(&h.app.body), body);
@@ -1439,20 +1443,9 @@ async fn ctrl_g_switches_kind_keeping_address_body_and_headers() {
     assert_eq!(h.app.editor_grpc_request().address, "http://x/t");
 
     h.app.handle_key(ctrl('g'));
-    assert_eq!(
-        (h.app.kind, h.app.protocol),
-        (Kind::Grpc, Protocol::Connect)
-    );
-    assert_eq!(h.app.url_text(), url);
-
-    h.app.handle_key(ctrl('g'));
     assert_eq!(h.app.kind, Kind::Ws);
     assert_eq!(h.app.url_text(), url);
     assert_eq!(h.app.editor_ws_request().url, "http://x/t");
-
-    h.app.handle_key(ctrl('g'));
-    assert_eq!(h.app.kind, Kind::Graphql);
-    assert_eq!(h.app.url_text(), url);
 
     h.app.handle_key(ctrl('g'));
     assert_eq!(h.app.kind, Kind::Http);
@@ -1463,25 +1456,20 @@ async fn ctrl_g_switches_kind_keeping_address_body_and_headers() {
 async fn clicking_the_kind_labels_switches_kind() {
     let mut h = harness().await;
     let url = ui::areas(SCREEN).url;
-    // The labels sit right-aligned in the top border of the URL box: ` REST|gRPC|Connect|WS|GQL `.
-    let start = url.right() - 1 - " REST|gRPC|Connect|WS|GQL ".len() as u16;
+    // The labels sit right-aligned in the top border of the URL box: ` REST|GQL|gRPC|WS `.
+    let start = url.right() - 1 - " REST|GQL|gRPC|WS ".len() as u16;
 
-    click(&mut h.app, start + 8, url.y); // inside `gRPC`
+    click(&mut h.app, start + 12, url.y); // inside `gRPC`
     assert_eq!(h.app.kind, Kind::Grpc);
-    click(&mut h.app, start + 8, url.y);
+    click(&mut h.app, start + 12, url.y);
     assert_eq!(
         h.app.kind,
         Kind::Grpc,
         "clicking the active label changes nothing"
     );
-    click(&mut h.app, start + 14, url.y); // inside `Connect`
-    assert_eq!(
-        (h.app.kind, h.app.protocol),
-        (Kind::Grpc, Protocol::Connect)
-    );
-    click(&mut h.app, start + 20, url.y); // inside `WS`
+    click(&mut h.app, start + 15, url.y); // inside `WS`
     assert_eq!(h.app.kind, Kind::Ws);
-    click(&mut h.app, start + 23, url.y); // inside `GQL`
+    click(&mut h.app, start + 7, url.y); // inside `GQL`
     assert_eq!(h.app.kind, Kind::Graphql);
     click(&mut h.app, start + 2, url.y); // inside `REST`
     assert_eq!(h.app.kind, Kind::Http);
@@ -1575,6 +1563,7 @@ async fn focus_ring_includes_schema_and_method_only_in_grpc_mode() {
         [Focus::List, Focus::Url, Focus::Body, Focus::Response]
     );
     h.app.handle_key(ctrl('g'));
+    h.app.handle_key(ctrl('g'));
     assert_eq!(
         ring(&mut h.app),
         [
@@ -1617,7 +1606,7 @@ async fn grpc_mode_shows_address_schema_method_and_metadata_boxes() {
     let out = grpc_screen(&h.app);
     for expected in [
         "Address",
-        "REST|gRPC",
+        "REST|GQL|gRPC",
         "TLS",
         "plain",
         "Schema",
@@ -1637,7 +1626,7 @@ async fn rest_mode_is_unchanged() {
     let mut h = harness().await;
     h.app.load_request(&request_with_headers());
     let out = grpc_screen(&h.app);
-    for expected in ["URL", "Method", "Headers (2)", "REST|gRPC"] {
+    for expected in ["URL", "Method", "Headers (2)", "REST|GQL|gRPC"] {
         assert!(out.contains(expected), "missing `{expected}` in:\n{out}");
     }
     for absent in ["Schema", "Address", "Metadata", "TLS"] {
@@ -1679,6 +1668,7 @@ async fn insecure_mode_is_flagged_on_the_address_row_for_tls_addresses_only() {
 #[tokio::test]
 async fn schema_file_mode_shows_the_editable_path_and_hint_when_empty() {
     let mut h = harness().await;
+    h.app.handle_key(ctrl('g'));
     h.app.handle_key(ctrl('g'));
     h.app.handle_key(ctrl('o'));
     assert_eq!(h.app.focus, Focus::Schema);
@@ -1743,6 +1733,7 @@ fn grpc_layout_adds_the_schema_and_method_rows_and_rest_has_none() {
 async fn clicking_the_tls_box_toggles_insecure_and_metadata_title_switches_tabs() {
     let mut h = harness().await;
     h.app.handle_key(ctrl('g'));
+    h.app.handle_key(ctrl('g'));
     let a = ui::areas_for(SCREEN, Kind::Grpc);
 
     click(&mut h.app, a.method.x + 2, a.method.y + 1);
@@ -1772,6 +1763,7 @@ fn fixture_schema() -> Schema {
 
 async fn grpc_harness(fake: FakeGrpc) -> Harness {
     let mut h = harness_full(Ok(ok_response()), None, fake).await;
+    h.app.handle_key(ctrl('g'));
     h.app.handle_key(ctrl('g'));
     h.app.url = TextArea::new(vec!["http://localhost:50051".into()]);
     h
@@ -2587,6 +2579,7 @@ async fn the_status_bar_help_matches_the_mode_and_lists_the_grpc_keys() {
     assert!(!rest.contains("Ctrl+X"), "{rest}");
 
     h.app.handle_key(ctrl('g'));
+    h.app.handle_key(ctrl('g'));
     let grpc = grpc_screen(&h.app);
     for key in [
         "Ctrl+G kind",
@@ -2660,6 +2653,7 @@ async fn the_keybindings_menu_lists_only_commands_of_the_current_mode() {
     let mut h = harness().await;
     let rest: Vec<_> = h.app.commands().iter().map(|c| c.description).collect();
     assert!(rest.contains(&"Previous HTTP method") && !rest.contains(&"Load the schema"));
+    h.app.handle_key(ctrl('g'));
     h.app.handle_key(ctrl('g'));
     let grpc: Vec<_> = h.app.commands().iter().map(|c| c.description).collect();
     assert!(grpc.contains(&"Load the schema") && !grpc.contains(&"Next HTTP method"));

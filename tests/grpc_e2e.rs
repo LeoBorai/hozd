@@ -59,6 +59,7 @@ async fn reflect_pick_stream_cancel_and_replay_from_history() {
 
     // gRPC mode, the address, and the schema by reflection.
     app.handle_key(ctrl('g'));
+    app.handle_key(ctrl('g'));
     app.url = TextArea::new(vec![server.url()]);
     app.handle_key(ctrl('l'));
     wait(&mut app, &mut rx, "the schema", |a| a.schema.is_some()).await;
@@ -162,6 +163,7 @@ async fn rest_and_grpc_calls_share_one_history() {
     })
     .await;
 
+    app.handle_key(ctrl('g'));
     app.handle_key(ctrl('g'));
     app.url = TextArea::new(vec![server.url()]);
     app.selected_method = Some("demo.v1.Demo/GetUser".into());
