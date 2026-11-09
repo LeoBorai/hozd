@@ -14,8 +14,8 @@ use tonic::{Code, Request, Status};
 
 use super::{
     CallEvent, CallHandle, CallKind, DynamicCodec, GrpcClient, GrpcError, GrpcOutcome, GrpcRequest,
-    GrpcStatus, Protocol, Schema, SchemaSource, connect, connect_rpc, load_schema_file,
-    message_to_json, parse_body, reflect,
+    GrpcStatus, Schema, SchemaSource, connect, load_schema_file, message_to_json, parse_body,
+    reflect,
 };
 use crate::client::{Header, Trace, trace_resolve};
 
@@ -29,8 +29,6 @@ pub struct TonicGrpc {
 }
 
 struct Inner {
-    /// Connect calls: `[verified, insecure]`.
-    http: [reqwest::Client; 2],
     channels: Mutex<HashMap<(String, bool), Channel>>,
     proto_include: Vec<PathBuf>,
 }
@@ -40,10 +38,6 @@ impl TonicGrpc {
     pub fn new(proto_include: Vec<PathBuf>) -> Self {
         Self {
             inner: Arc::new(Inner {
-                http: [
-                    connect_rpc::http_client(false),
-                    connect_rpc::http_client(true),
-                ],
                 channels: Mutex::new(HashMap::new()),
                 proto_include,
             }),
@@ -138,18 +132,6 @@ async fn drive(
 
     let messages = parse_body(kind, &method.input(), request.body.as_deref())?;
     let metadata = to_metadata(&request.metadata)?;
-    if request.protocol == Protocol::Connect {
-        return connect_rpc::call(
-            &inner.http[usize::from(request.insecure)],
-            request,
-            &method,
-            kind,
-            &messages,
-            tx,
-            outcome,
-        )
-        .await;
-    }
     let trace = {
         let tx = tx.clone();
         Trace::new(move |line| {

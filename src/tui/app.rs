@@ -13,9 +13,9 @@ use tokio_util::sync::CancellationToken;
 use crate::client::{
     Body, BodyKind, CallEvent, CallKind, Field, GraphqlOperation, GraphqlRequest, GraphqlSchema,
     GrpcOutcome, GrpcRequest, GrpcStatus, Header, HttpRequest, JsonValue, Kind, Method,
-    OperationKind, Part, PartValue, Protocol, Request, Schema, SchemaSource, SharedGrpc,
-    SharedHttp, SharedWs, Trace, TungsteniteWs, WsEvent, WsOutcome, WsRequest, introspect,
-    split_query, with_query,
+    OperationKind, Part, PartValue, Request, Schema, SchemaSource, SharedGrpc, SharedHttp,
+    SharedWs, Trace, TungsteniteWs, WsEvent, WsOutcome, WsRequest, introspect, split_query,
+    with_query,
 };
 use crate::history::{History, HistoryEntry, Outcome, Summary};
 use crate::project::{Loaded, Template};
@@ -208,7 +208,6 @@ pub struct GrpcView {
     pub method: String,
     pub schema: SchemaSource,
     pub insecure: bool,
-    pub protocol: Protocol,
 }
 
 impl From<&HttpRequest> for RequestView {
@@ -242,7 +241,6 @@ impl From<&Request> for RequestView {
                     method: r.method.clone(),
                     schema: r.schema.clone(),
                     insecure: r.insecure,
-                    protocol: r.protocol,
                 },
             },
             Request::Graphql(r) => Self {
@@ -341,8 +339,6 @@ pub struct App {
     suggested_for: Option<String>,
     /// gRPC editor: skip TLS certificate verification.
     pub insecure: bool,
-    /// gRPC editor: gRPC or ConnectRPC.
-    pub protocol: Protocol,
     /// gRPC editor: the `package.Service/Method` to call.
     pub selected_method: Option<String>,
     /// The schema loaded for the gRPC editor, if any.
@@ -443,7 +439,6 @@ impl App {
             suggestions: Suggestions::default(),
             suggested_for: None,
             insecure: false,
-            protocol: Protocol::default(),
             selected_method: None,
             schema: None,
             schema_loading: false,
@@ -811,7 +806,6 @@ impl App {
             method: self.selected_method.clone().unwrap_or_default(),
             schema: self.schema_source(),
             insecure: self.insecure,
-            protocol: self.protocol,
             metadata,
             body: (!body.is_empty()).then_some(body),
         }
@@ -1699,17 +1693,15 @@ impl App {
         }
     }
 
-    /// Cycles the editor through REST, gRPC, Connect, WebSocket and GraphQL. The address/URL, body and
+    /// Cycles the editor through REST, GraphQL, gRPC and WebSocket. The address/URL, body and
     /// headers/metadata texts are kept.
     pub fn toggle_kind(&mut self) {
-        let (kind, protocol) = match (self.kind, self.protocol) {
-            (Kind::Http, _) => (Kind::Grpc, Protocol::Grpc),
-            (Kind::Grpc, Protocol::Grpc) => (Kind::Grpc, Protocol::Connect),
-            (Kind::Grpc, Protocol::Connect) => (Kind::Ws, Protocol::Grpc),
-            (Kind::Ws, _) => (Kind::Graphql, Protocol::Grpc),
-            (Kind::Graphql, _) => (Kind::Http, Protocol::Grpc),
+        let kind = match self.kind {
+            Kind::Http => Kind::Graphql,
+            Kind::Graphql => Kind::Grpc,
+            Kind::Grpc => Kind::Ws,
+            Kind::Ws => Kind::Http,
         };
-        self.protocol = protocol;
         self.set_kind(kind);
     }
 
@@ -1966,8 +1958,7 @@ impl App {
         } else if areas.rpc.contains(at) {
             self.focus_editor(Focus::Method);
             self.open_picker();
-        } else if let Some((kind, protocol)) = ui::kind_at(areas.url, at) {
-            self.protocol = protocol;
+        } else if let Some(kind) = ui::kind_at(areas.url, at) {
             self.set_kind(kind);
         } else if areas.url.contains(at) {
             self.focus_editor(Focus::Url);
@@ -2347,7 +2338,6 @@ impl App {
             }
         }
         self.insecure = request.insecure;
-        self.protocol = request.protocol;
         self.body = request
             .body
             .as_deref()

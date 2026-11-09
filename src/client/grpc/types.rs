@@ -16,25 +16,6 @@ pub enum SchemaSource {
     File(PathBuf),
 }
 
-/// The wire protocol of an RPC call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum Protocol {
-    #[default]
-    Grpc,
-    /// ConnectRPC: unary and server streaming, JSON messages, over HTTP.
-    Connect,
-}
-
-impl Protocol {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Protocol::Grpc => "grpc",
-            Protocol::Connect => "connect",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct GrpcRequest {
     pub address: String,
@@ -44,8 +25,6 @@ pub struct GrpcRequest {
     pub schema: SchemaSource,
     #[serde(default)]
     pub insecure: bool,
-    #[serde(default)]
-    pub protocol: Protocol,
     #[serde(default)]
     pub metadata: Vec<Header>,
     /// JSON: an object, or an array of objects for client and bidirectional streaming.
@@ -206,7 +185,6 @@ mod tests {
             method: "a.B/C".into(),
             schema: SchemaSource::File("api/a.proto".into()),
             insecure: true,
-            protocol: Protocol::Connect,
             metadata: vec![Header::new("k", "v")],
             body: Some("{}".into()),
         };

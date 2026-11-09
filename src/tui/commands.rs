@@ -80,7 +80,7 @@ pub const COMMANDS: &[Command] = &[
     ),
     cmd(
         "<ctrl+g>",
-        "Cycle REST, gRPC, Connect, WebSocket and GraphQL",
+        "Cycle REST, GraphQL, gRPC and WebSocket",
         Action::ToggleKind,
         None,
     ),

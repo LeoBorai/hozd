@@ -180,7 +180,7 @@ async fn tui_connects_sends_closes_and_replays_from_history() {
     let tmp = tempfile::tempdir().unwrap();
     let (mut app, mut rx) = startup(&Home::at(tmp.path().join(".hozd"))).await.unwrap();
 
-    // REST -> gRPC -> Connect -> WebSocket.
+    // REST -> GraphQL -> gRPC -> WebSocket.
     for _ in 0..3 {
         app.handle_key(ctrl('g'));
     }

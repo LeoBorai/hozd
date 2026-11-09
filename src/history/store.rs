@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::client::{
     Body, GraphqlRequest, GrpcOutcome, GrpcRequest, GrpcStatus, Header, HttpRequest, HttpResponse,
-    Kind, Method, Outcome, Protocol, Request, SchemaSource, WsClose, WsMessage, WsOutcome,
-    WsRequest,
+    Kind, Method, Outcome, Request, SchemaSource, WsClose, WsMessage, WsOutcome, WsRequest,
 };
 
 /// Bodies larger than this are truncated before being stored.
@@ -223,7 +222,6 @@ impl History {
                     method: r.method,
                     schema: extra.schema,
                     insecure: extra.insecure,
-                    protocol: extra.protocol,
                     metadata: headers(&r.request_headers)?,
                     body: r.request_body,
                 });
@@ -278,8 +276,6 @@ struct GrpcExtra {
     schema: SchemaSource,
     #[serde(default)]
     insecure: bool,
-    #[serde(default)]
-    protocol: Protocol,
     #[serde(default)]
     messages: Vec<String>,
     #[serde(default)]
@@ -361,7 +357,6 @@ fn grpc_row<'a>(request: &'a GrpcRequest, outcome: &'a GrpcOutcome) -> Row<'a> {
     let extra = GrpcExtra {
         schema: request.schema.clone(),
         insecure: request.insecure,
-        protocol: request.protocol,
         messages: kept,
         status_message: outcome
             .status

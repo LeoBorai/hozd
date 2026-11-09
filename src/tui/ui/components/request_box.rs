@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
-use crate::client::{BodyKind, Kind, Protocol};
+use crate::client::{BodyKind, Kind};
 
 use crate::tui::app::{App, Focus, RequestTab};
 use crate::tui::headers::{self, Col, HeaderEditor};
@@ -479,18 +479,11 @@ pub(crate) fn draw_http_preview(
         Kind::Grpc => {
             method = "POST";
             target = format!("/{}", request.grpc.method.trim_start_matches('/'));
-            if request.grpc.protocol == Protocol::Grpc {
-                version = "HTTP/2";
-                defaults.extend([
-                    ("Content-Type", "application/grpc".to_owned()),
-                    ("TE", "trailers".to_owned()),
-                ]);
-            } else {
-                defaults.extend([
-                    ("Content-Type", "application/json".to_owned()),
-                    ("Connect-Protocol-Version", "1".to_owned()),
-                ]);
-            }
+            version = "HTTP/2";
+            defaults.extend([
+                ("Content-Type", "application/grpc".to_owned()),
+                ("TE", "trailers".to_owned()),
+            ]);
         }
     }
     // gRPC addresses are `host:port` without a scheme; the host is the authority either way

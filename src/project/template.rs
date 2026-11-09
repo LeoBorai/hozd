@@ -4,8 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::client::{
-    GraphqlRequest, GrpcRequest, Header, HttpRequest, Method, Protocol, Request, SchemaSource,
-    WsRequest,
+    GraphqlRequest, GrpcRequest, Header, HttpRequest, Method, Request, SchemaSource, WsRequest,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -47,7 +46,6 @@ pub enum TemplateError {
 /// method = "user.v1.UserService/GetUser"
 /// reflection = true
 /// insecure = false
-/// protocol = "grpc" # or "connect"
 /// body = '''
 /// { "id": 7 }
 /// '''
@@ -130,7 +128,6 @@ pub struct GrpcTemplate {
     pub method: String,
     pub schema: SchemaSource,
     pub insecure: bool,
-    pub protocol: Protocol,
     pub metadata: BTreeMap<String, String>,
     pub body: Option<String>,
 }
@@ -151,7 +148,6 @@ struct Raw {
     schema: Option<PathBuf>,
     #[serde(default)]
     insecure: bool,
-    protocol: Option<String>,
     body: Option<String>,
     query: Option<String>,
     variables: Option<String>,
@@ -211,15 +207,6 @@ impl Template {
                     method,
                     schema,
                     insecure: raw.insecure,
-                    protocol: match raw.protocol.as_deref() {
-                        None | Some("grpc") => Protocol::Grpc,
-                        Some("connect") => Protocol::Connect,
-                        Some(other) => {
-                            return Err(invalid(format!(
-                                "unknown protocol `{other}`; expected `grpc` or `connect`"
-                            )));
-                        }
-                    },
                     metadata: raw.metadata,
                     body: raw.body,
                 })
@@ -280,7 +267,6 @@ impl Template {
                 method: t.method.clone(),
                 schema: t.schema.clone(),
                 insecure: t.insecure,
-                protocol: t.protocol,
                 metadata: pairs(&t.metadata),
                 body: t.body.clone(),
             }),

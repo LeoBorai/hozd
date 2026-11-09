@@ -15,7 +15,7 @@ pub use graphql::{
 };
 pub use grpc::{
     CallEvent, CallHandle, CallKind, FakeGrpc, FakeStep, GrpcClient, GrpcError, GrpcOutcome,
-    GrpcRequest, GrpcStatus, MethodInfo, Protocol, Schema, SchemaSource, SharedGrpc, TonicGrpc,
+    GrpcRequest, GrpcStatus, MethodInfo, Schema, SchemaSource, SharedGrpc, TonicGrpc,
     load_schema_file, reflect, status_name,
 };
 pub use http::ReqwestClient;

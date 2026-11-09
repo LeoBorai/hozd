@@ -108,10 +108,10 @@ async fn introspect_pick_send_and_replay_from_history() {
         tx,
     );
 
-    // REST -> gRPC -> Connect -> WS -> GraphQL
+    // REST -> GraphQL
     app.handle_key(key(KeyCode::Tab));
     type_text(&mut app, &server.uri());
-    for _ in 0..4 {
+    for _ in 0..1 {
         app.handle_key(ctrl('g'));
     }
     assert_eq!(app.kind, Kind::Graphql);
@@ -177,7 +177,7 @@ async fn invalid_variables_are_refused_before_sending() {
     );
     app.handle_key(key(KeyCode::Tab));
     type_text(&mut app, "http://127.0.0.1:9/graphql");
-    for _ in 0..4 {
+    for _ in 0..1 {
         app.handle_key(ctrl('g'));
     }
     app.handle_key(key(KeyCode::Tab));
@@ -210,7 +210,7 @@ async fn graphql_layout_shows_endpoint_operation_and_query_tabs() {
         Loaded::default(),
         tx,
     );
-    for _ in 0..4 {
+    for _ in 0..1 {
         app.handle_key(ctrl('g'));
     }
     let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
@@ -269,7 +269,7 @@ async fn introspected_app(query: Option<&str>) -> (App, MockServer, tempfile::Te
     );
     app.handle_key(key(KeyCode::Tab));
     type_text(&mut app, &server.uri());
-    for _ in 0..4 {
+    for _ in 0..1 {
         app.handle_key(ctrl('g'));
     }
     if let Some(query) = query {
