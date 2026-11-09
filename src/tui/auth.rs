@@ -290,6 +290,10 @@ impl AuthEditor {
                         Check::new(Fail, "Signature not verified"),
                         Check::new(Fail, "Invalid secret"),
                     ),
+                    Verification::BadKey => (
+                        Check::new(Fail, "Signature not verified"),
+                        Check::new(Fail, "Invalid key: expected an RSA public key in PEM"),
+                    ),
                     Verification::Unsupported(alg) => (
                         Check::new(Idle, format!("Signature not verified: {alg} unsupported")),
                         Check::new(Idle, "Secret not checked"),
