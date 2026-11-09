@@ -4,6 +4,11 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+    # sqlx-sqlite 0.9.0 caps libsqlite3-sys at <0.38, the fix needs >=0.39. hozd only opens its
+    # own history database, never a file written by an untrusted party. Drop once sqlx allows 0.39.
+    { id = "RUSTSEC-2026-0459", reason = "no compatible fix in sqlx 0.9; only the app's own DB is opened" },
+]
 
 [licenses]
 version = 2
