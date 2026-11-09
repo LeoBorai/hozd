@@ -3,6 +3,11 @@
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use hmac::{Hmac, KeyInit, Mac};
+use rsa::PublicKey;
+use rsa::pkcs1::DecodeRsaPublicKey;
+use rsa::pkcs1v15::{Signature as RsaSignature, VerifyingKey};
+use rsa::pkcs8::DecodePublicKey;
+use rsa::signature::Verifier;
 use sha2::{Sha256, Sha384, Sha512};
 
 /// `Basic <base64(user:password)>`, RFC 7617.
@@ -40,7 +45,9 @@ pub enum Verification {
     Verified,
     /// The signature does not match the secret.
     Mismatch,
-    /// The algorithm needs a key this check cannot use (RS256, ES256, none, ...).
+    /// The key is not a usable RSA public key (RS256 needs a PEM public key).
+    BadKey,
+    /// The algorithm needs a key this check cannot use (ES256, none, ...).
     Unsupported(String),
 }
 
@@ -98,13 +105,18 @@ impl Jwt {
         serde_json::to_string_pretty(&self.payload).unwrap_or_default()
     }
 
-    /// Checks the signature against `secret` (HS256, HS384 and HS512).
+    /// Checks the signature against `secret`: the shared secret for HS256, HS384 and HS512,
+    /// a PEM public key (SPKI or PKCS#1) for RS256.
     pub fn verify(&self, secret: &[u8]) -> Verification {
         let input = self.signing_input.as_bytes();
         let ok = match self.algorithm() {
             "HS256" => hmac_matches::<Sha256>(secret, input, &self.signature),
             "HS384" => hmac_matches::<Sha384>(secret, input, &self.signature),
             "HS512" => hmac_matches::<Sha512>(secret, input, &self.signature),
+            "RS256" => match rsa_public_key(secret) {
+                Some(key) => rs256_matches(key, input, &self.signature),
+                None => return Verification::BadKey,
+            },
             other => return Verification::Unsupported(other.to_owned()),
         };
         if ok {
@@ -113,6 +125,36 @@ impl Jwt {
             Verification::Mismatch
         }
     }
+}
+
+/// An RSA public key from PEM text. Whitespace may be missing, as a pasted key is joined
+/// into one line.
+fn rsa_public_key(pem: &[u8]) -> Option<PublicKey> {
+    let text = std::str::from_utf8(pem).ok()?;
+    let mut body = String::new();
+    let mut rest = text;
+    // drop the `-----BEGIN ...-----` and `-----END ...-----` lines
+    while let Some(start) = rest.find("-----") {
+        body.push_str(&rest[..start]);
+        let after = &rest[start + 5..];
+        let end = after.find("-----")?;
+        rest = &after[end + 5..];
+    }
+    body.push_str(rest);
+    let body: String = body.split_whitespace().collect();
+    let der = STANDARD.decode(body).ok()?;
+    PublicKey::from_public_key_der(&der)
+        .or_else(|_| PublicKey::from_pkcs1_der(&der))
+        .ok()
+}
+
+fn rs256_matches(key: PublicKey, input: &[u8], signature: &[u8]) -> bool {
+    let Ok(signature) = RsaSignature::try_from(signature) else {
+        return false;
+    };
+    VerifyingKey::<Sha256>::new(key)
+        .verify(input, &signature)
+        .is_ok()
 }
 
 fn hmac_matches<D: hmac::digest::block_api::EagerHash>(
@@ -167,6 +209,49 @@ mod tests {
     const TOKEN: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0.KMUFsIDTnFmyG3nMiGM6H9FNFUROf3wh7SmqJp-QV30";
     const SECRET: &str = "a-string-secret-at-least-256-bits-long";
 
+    // generated with `openssl genrsa 2048`; signed with the private key
+    const RS_TOKEN: &str = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.dumXMGXi0gsAsV2JUmGYkU5XeieYj0cl8_l5mWCB1OIqiGnpzqHK0MFTxHryw3qlFloTCJ7R1ZkVfVVo2h8l5OYWpIaU76Gs0PiES0a64x0OyINsdL-19znVmKdsAah2TmXIGj9hw6hQQDEnnqSoqsovGpcvxjB5AcKwULoqNwJLlKBLVoHB2wFp0qm_zGbGDLN7Ha-1OO0IoetPr9dD0mdGv0Zo8oYCgp_qRmr5XE0HLU4JwEf_ju2hBv9SdUu0yYMDk5--3S3SBlpV8S0m055H71u4m9URw-zWLwHq06iEGukT8gPdK8zFt1Ux2TyGY0ptjMdmDH0ZXkhvWktLrg";
+    const RS_PUBLIC: &str = "-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxiKT2uKpLNczsxOLcgQp
+kZ8ogzS6AhxDCSwhcq5lYrM/E9rwdEIivEBGM2lBtW1QXPVX4o/xkMh00pnfMHQW
+DhJMWmXRR4XvvgXYOhnM9RwEZYpZgVzLaGBKtP84ijpH9H4mDHat3nwN7MDY8yCg
+uS9VPmRycR26i+FeKfMzHyHO0lHkI0e3FQQoERALK12n+xOpm2ih5cjWh+Ch7XqU
+ayKeHkfoDEmKCHBX+Bg1ysxa07sKkXc6Vv+l85dYnVWdFPtjQ00RKjSS5YVICU3f
++JLe5ZHOmm5Ggyd1Z5wBCfYEVjW1oHRCzAS0jxwRz0QbIC34+koiiIwoRaf67fg5
+NwIDAQAB
+-----END PUBLIC KEY-----
+";
+    const RS_PKCS1: &str = "-----BEGIN RSA PUBLIC KEY-----
+MIIBCgKCAQEAxiKT2uKpLNczsxOLcgQpkZ8ogzS6AhxDCSwhcq5lYrM/E9rwdEIi
+vEBGM2lBtW1QXPVX4o/xkMh00pnfMHQWDhJMWmXRR4XvvgXYOhnM9RwEZYpZgVzL
+aGBKtP84ijpH9H4mDHat3nwN7MDY8yCguS9VPmRycR26i+FeKfMzHyHO0lHkI0e3
+FQQoERALK12n+xOpm2ih5cjWh+Ch7XqUayKeHkfoDEmKCHBX+Bg1ysxa07sKkXc6
+Vv+l85dYnVWdFPtjQ00RKjSS5YVICU3f+JLe5ZHOmm5Ggyd1Z5wBCfYEVjW1oHRC
+zAS0jxwRz0QbIC34+koiiIwoRaf67fg5NwIDAQAB
+-----END RSA PUBLIC KEY-----
+";
+
+    #[test]
+    fn verifies_rs256() {
+        let jwt = Jwt::parse(RS_TOKEN).unwrap();
+        assert_eq!(jwt.algorithm(), "RS256");
+        assert_eq!(jwt.verify(RS_PUBLIC.as_bytes()), Verification::Verified);
+        assert_eq!(jwt.verify(RS_PKCS1.as_bytes()), Verification::Verified);
+        // a pasted key is joined into one line
+        let joined: String = RS_PUBLIC.split_whitespace().collect();
+        assert_eq!(jwt.verify(joined.as_bytes()), Verification::Verified);
+        assert_eq!(jwt.verify(b"not a key"), Verification::BadKey);
+        let other = Jwt::parse(TOKEN).unwrap();
+        assert_eq!(other.verify(RS_PUBLIC.as_bytes()), Verification::Mismatch);
+        let mut tampered = RS_TOKEN.to_owned();
+        tampered.replace_range(40..41, "Z");
+        let tampered = Jwt::parse(&tampered).unwrap();
+        assert_eq!(
+            tampered.verify(RS_PUBLIC.as_bytes()),
+            Verification::Mismatch
+        );
+    }
+
     #[test]
     fn basic_round_trips() {
         let value = basic_value("Aladdin", "open sesame");
@@ -202,10 +287,10 @@ mod tests {
 
     #[test]
     fn other_algorithms_are_unsupported() {
-        // {"alg":"RS256"}.{}.sig
-        let token = "eyJhbGciOiJSUzI1NiJ9.e30.c2ln";
+        // {"alg":"ES256"}.{}.sig
+        let token = "eyJhbGciOiJFUzI1NiJ9.e30.c2ln";
         let jwt = Jwt::parse(token).unwrap();
-        assert_eq!(jwt.verify(b"k"), Verification::Unsupported("RS256".into()));
+        assert_eq!(jwt.verify(b"k"), Verification::Unsupported("ES256".into()));
     }
 
     #[test]
