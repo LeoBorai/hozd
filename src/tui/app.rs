@@ -345,7 +345,11 @@ pub struct App {
     /// The captured values, substituted for `$name` in REST bodies.
     pub vars: Vars,
     /// Whether `$name` in the REST body is replaced by the variable's value.
-    pub use_vars: bool,
+    pub vars_body: bool,
+    /// Same for the REST header values.
+    pub vars_headers: bool,
+    /// Same for the REST URL param values.
+    pub vars_params: bool,
     /// GraphQL editor: the variables, a JSON object.
     pub variables: TextArea<'static>,
     /// GraphQL editor: the schema introspected from the endpoint, if any.
@@ -456,7 +460,9 @@ impl App {
             left_tab: LeftTab::default(),
             captures: HeaderEditor::default(),
             vars: Vars::default(),
-            use_vars: true,
+            vars_body: true,
+            vars_headers: true,
+            vars_params: true,
             variables: TextArea::default(),
             graphql: None,
             schema_mode: SchemaMode::Reflection,
@@ -579,6 +585,15 @@ impl App {
     /// The URL as sent: the address with the query parameters encoded onto it.
     fn http_url(&self, strict: bool) -> Result<String, String> {
         let params = self.params.pairs_untrimmed(strict)?;
+        Ok(with_query(self.url_text().trim(), &params))
+    }
+
+    /// The URL as sent, with `$name` replaced in the param values.
+    fn http_url_vars(&self) -> Result<String, String> {
+        let mut params = self.params.pairs_untrimmed(true)?;
+        for (_, v) in &mut params {
+            *v = self.vars.substitute(v, false);
+        }
         Ok(with_query(self.url_text().trim(), &params))
     }
 
@@ -1135,7 +1150,7 @@ impl App {
             (KeyCode::Char('x'), true) => Some(Action::Cancel),
             (KeyCode::Char('e'), true) => Some(Action::OpenLog),
             (KeyCode::Char('v'), true) => Some(Action::ToggleVariablesPanel),
-            (KeyCode::Char('b'), true) if self.kind == Kind::Http => Some(Action::ToggleVars),
+            (KeyCode::Char('b'), true) => Some(Action::ToggleVars),
             (KeyCode::Char('o'), true) if self.kind == Kind::Grpc => {
                 Some(Action::ToggleSchemaSource)
             }
@@ -1196,9 +1211,26 @@ impl App {
             key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL);
         let name = self.captures.rows[self.captures.row].name_text();
         self.captures.key(key);
+        if key.code == KeyCode::Enter {
+            self.register_literals();
+        }
         if removing {
             self.vars.remove(name.trim());
             self.notice = Some(format!("removed ${}", name.trim()));
+        }
+    }
+
+    /// Sets the variables whose capture is a literal (a value not starting with `.`): they
+    /// need no response, so they exist as soon as the row is entered or left.
+    fn register_literals(&mut self) {
+        for (name, expr) in self.captures.pairs(false).unwrap_or_default() {
+            let name = name.trim().trim_start_matches('$');
+            if !vars::valid_name(name) || expr.trim().is_empty() || expr.trim().starts_with('.') {
+                continue;
+            }
+            if let Ok(value) = vars::capture("", &expr) {
+                self.vars.set(name, value);
+            }
         }
     }
 
@@ -1216,7 +1248,7 @@ impl App {
             if expr.trim().is_empty() {
                 continue;
             }
-            match vars::query(body, &expr) {
+            match vars::capture(body, &expr) {
                 Ok(value) => {
                     self.log.push(Level::Info, format!("captured ${name}"));
                     self.vars.set(&name, value);
@@ -1241,12 +1273,42 @@ impl App {
         }
     }
 
+    /// Flips `$variables` for the section the request box shows (Auth goes out as a header).
     fn toggle_vars(&mut self) {
-        self.use_vars = !self.use_vars;
+        if !ui::vars_tab(self.kind, self.request_tab) {
+            return;
+        }
+        let (name, flag) = match self.request_tab {
+            RequestTab::Params => ("URL params", &mut self.vars_params),
+            RequestTab::Headers | RequestTab::Auth => ("headers", &mut self.vars_headers),
+            _ => ("body", &mut self.vars_body),
+        };
+        *flag = !*flag;
+        let on = *flag;
         self.notice = Some(format!(
-            "variables in the body: {}",
-            if self.use_vars { "on" } else { "off" }
+            "variables in the {name}: {}",
+            if on { "on" } else { "off" }
         ));
+    }
+
+    /// `headers` with `$name` replaced in the values, when the headers switch is on.
+    fn with_header_vars(&self, headers: &[Header]) -> Vec<Header> {
+        let mut out = headers.to_vec();
+        if self.vars_headers {
+            for h in &mut out {
+                h.value = self.vars.substitute(&h.value, false);
+            }
+        }
+        out
+    }
+
+    /// Whether `$variables` are on for the section `tab` shows.
+    pub fn vars_on(&self, tab: RequestTab) -> bool {
+        match tab {
+            RequestTab::Params => self.vars_params,
+            RequestTab::Headers | RequestTab::Auth => self.vars_headers,
+            _ => self.vars_body,
+        }
     }
 
     /// Keys typed in the body editor, which depends on the body kind.
@@ -2119,9 +2181,8 @@ impl App {
                 self.focus = self.editor_focus();
                 return;
             }
-            if view.kind == Kind::Http
-                && self.request_tab == RequestTab::Body
-                && ui::vars_title_at(areas.body, at, self.use_vars)
+            if ui::vars_tab(view.kind, self.request_tab)
+                && ui::vars_title_at(areas.body, at, self.vars_on(self.request_tab))
             {
                 return self.toggle_vars();
             }
@@ -2335,6 +2396,9 @@ impl App {
             self.inspect_preview = self.view().previewing;
         }
         if focus != self.focus {
+            if self.focus == Focus::Captures {
+                self.register_literals();
+            }
             for ta in [
                 &mut self.url,
                 &mut self.body,
@@ -2510,6 +2574,7 @@ impl App {
 
     /// Opens the socket; once it is open, sends the body as a text message.
     fn send_ws(&mut self) {
+        self.register_literals();
         if let Some(out) = &self.ws_out {
             let text = self.body_text();
             if text.is_empty() {
@@ -2538,7 +2603,9 @@ impl App {
         self.log.push(Level::Info, format!("-> WS {}", request.url));
         self.live = Some(Outcome::Ws(WsOutcome::default()));
 
-        let mut session = self.ws.connect(request.clone());
+        let mut sent = request.clone();
+        sent.headers = self.with_header_vars(&request.headers);
+        let mut session = self.ws.connect(sent);
         self.ws_out = Some(session.sender());
         self.cancel = Some(session.canceller());
         let (store, tx) = (self.store.clone(), self.tx.clone());
@@ -2593,6 +2660,7 @@ impl App {
     }
 
     fn send_http(&mut self) {
+        self.register_literals();
         let request = match self.try_request() {
             Ok(request) => request,
             Err(message) => {
@@ -2616,8 +2684,18 @@ impl App {
 
         // History keeps the request as written, so `$name` is resolved again on a replay.
         let mut sent = request.clone();
-        if self.use_vars {
+        if self.vars_body {
             sent.body = sent.body.map(|b| self.vars.apply(b));
+        }
+        if self.vars_headers {
+            for h in &mut sent.headers {
+                h.value = self.vars.substitute(&h.value, false);
+            }
+        }
+        if self.vars_params
+            && let Ok(url) = self.http_url_vars()
+        {
+            sent.url = url;
         }
 
         let (client, store, tx) = (self.client.clone(), self.store.clone(), self.tx.clone());
@@ -2638,6 +2716,7 @@ impl App {
     }
 
     fn send_graphql(&mut self) {
+        self.register_literals();
         let request = match self.try_graphql_request() {
             Ok(request) => request,
             Err(message) => {
@@ -2655,7 +2734,9 @@ impl App {
             self.status = Some("write a query first".into());
             return;
         }
-        let http = match request.to_http() {
+        let mut sendable = request.clone();
+        sendable.headers = self.with_header_vars(&request.headers);
+        let http = match sendable.to_http() {
             Ok(http) => http,
             Err(message) => {
                 self.status = Some(message);
@@ -2687,6 +2768,7 @@ impl App {
     }
 
     fn send_grpc(&mut self) {
+        self.register_literals();
         let request = match self.try_grpc_request() {
             Ok(request) => request,
             Err(message) => {
@@ -2709,6 +2791,8 @@ impl App {
             return;
         }
 
+        let mut sent = request.clone();
+        sent.metadata = self.with_header_vars(&request.metadata);
         let key = self.schema_key();
         let cached = self.current_schema().cloned();
         self.log.push(
@@ -2747,7 +2831,7 @@ impl App {
             };
 
             let outcome = match schema {
-                Ok(schema) => run_call(&*grpc, request.clone(), schema, &cancel, &tx).await,
+                Ok(schema) => run_call(&*grpc, sent.clone(), schema, &cancel, &tx).await,
                 Err(message) => {
                     let outcome = failed_outcome(message);
                     let _ = tx.send(Msg::GrpcEvent(CallEvent::Done(outcome.clone())));

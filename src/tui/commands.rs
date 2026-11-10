@@ -149,9 +149,9 @@ pub const COMMANDS: &[Command] = &[
     ),
     cmd(
         "<ctrl+b>",
-        "Toggle $variables in the request body",
+        "Toggle $variables in the current section (URL params, headers or body)",
         Action::ToggleVars,
-        Some(Kind::Http),
+        None,
     ),
     cmd("<ctrl+c>", "Quit", Action::Quit, None),
 ];

@@ -199,6 +199,24 @@ fn parse_path(expr: &str) -> Result<Vec<Step>, String> {
     Ok(steps)
 }
 
+/// The value a capture row gives: a path into `body` when `expr` starts with `.`, the
+/// text between the quotes when it is wrapped in `"` or `'`, otherwise `expr` as written.
+/// The body is parsed only for a path.
+pub fn capture(body: &str, expr: &str) -> Result<String, String> {
+    let expr = expr.trim();
+    if expr.starts_with('.') {
+        return query(body, expr);
+    }
+    for quote in ['"', '\''] {
+        if expr.len() >= 2
+            && let Some(inner) = expr.strip_prefix(quote).and_then(|e| e.strip_suffix(quote))
+        {
+            return Ok(inner.to_owned());
+        }
+    }
+    Ok(expr.to_owned())
+}
+
 /// Selects the value `expr` points to in the JSON `body`. A string comes back as it is
 /// (like `jq -r`), anything else as compact JSON.
 pub fn query(body: &str, expr: &str) -> Result<String, String> {
@@ -244,6 +262,17 @@ mod tests {
         assert_eq!(query(body, r#".["a b"]"#).unwrap(), "true");
         assert!(query(body, ".data.nope").is_err());
         assert!(query("nope", ".a").is_err());
+    }
+
+    #[test]
+    fn capture_paths_start_with_a_dot_and_quotes_are_literals() {
+        let body = r#"{"a":"x"}"#;
+        assert_eq!(capture(body, ".a").unwrap(), "x");
+        assert_eq!(capture(body, r#"".a""#).unwrap(), ".a");
+        assert_eq!(capture(body, "'.a'").unwrap(), ".a");
+        assert_eq!(capture("not json", "'v'").unwrap(), "v");
+        assert_eq!(capture(body, "plain").unwrap(), "plain");
+        assert!(capture(body, ".b").is_err());
     }
 
     #[test]
