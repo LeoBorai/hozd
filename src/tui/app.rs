@@ -19,6 +19,7 @@ use crate::client::{
 };
 use crate::history::{History, HistoryEntry, Outcome, Summary};
 use crate::project::{Loaded, Template};
+use crate::vars::{self, Vars};
 
 use super::auth::{self, AuthEditor, Scheme};
 use super::commands::{Action, Command, commands_for};
@@ -60,6 +61,17 @@ pub enum Focus {
     Method,
     /// The response body box; `Enter` opens it in the reading panel.
     Response,
+    /// The Variables panel: the captures, one row each (variable name, path into the
+    /// response).
+    Captures,
+}
+
+/// What the left column's lower panel shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LeftTab {
+    #[default]
+    Logs,
+    Variables,
 }
 
 /// Which editor the request's lower box shows.
@@ -325,6 +337,15 @@ pub struct App {
     /// REST `Authorization` header, put together when the request is built.
     pub auth: AuthEditor,
     pub request_tab: RequestTab,
+    /// Which panel the left column's lower half shows.
+    pub left_tab: LeftTab,
+    /// Variables to capture from the next response: name and a jq-style path into its
+    /// JSON body.
+    pub captures: HeaderEditor,
+    /// The captured values, substituted for `$name` in REST bodies.
+    pub vars: Vars,
+    /// Whether `$name` in the REST body is replaced by the variable's value.
+    pub use_vars: bool,
     /// GraphQL editor: the variables, a JSON object.
     pub variables: TextArea<'static>,
     /// GraphQL editor: the schema introspected from the endpoint, if any.
@@ -432,6 +453,10 @@ impl App {
             params: HeaderEditor::default(),
             auth: AuthEditor::default(),
             request_tab: RequestTab::Body,
+            left_tab: LeftTab::default(),
+            captures: HeaderEditor::default(),
+            vars: Vars::default(),
+            use_vars: true,
             variables: TextArea::default(),
             graphql: None,
             schema_mode: SchemaMode::Reflection,
@@ -837,7 +862,11 @@ impl App {
 
     /// Panels in display order; panel `n` of the UI is entry `n - 1`.
     pub fn panels(&self) -> Vec<Focus> {
-        let mut panels = vec![Focus::List, Focus::Url];
+        let mut panels = vec![Focus::List];
+        if self.left_tab == LeftTab::Variables {
+            panels.push(Focus::Captures);
+        }
+        panels.push(Focus::Url);
         match self.kind {
             Kind::Grpc => panels.extend([Focus::Schema, Focus::Method]),
             Kind::Graphql => panels.push(Focus::Method),
@@ -910,6 +939,9 @@ impl App {
                 self.sending = false;
                 self.scroll = 0;
                 self.log_outcome(&outcome);
+                if let Outcome::Response(r) = &outcome {
+                    self.capture(&r.body);
+                }
                 self.live = Some(outcome);
             }
             Msg::GrpcEvent(event) => self.apply_event(event),
@@ -1056,6 +1088,7 @@ impl App {
                 | Focus::Params
                 | Focus::Auth
                 | Focus::Schema
+                | Focus::Captures
         );
         if key.code == KeyCode::F(1) || (key.code == KeyCode::Char('?') && !typing && !ctrl) {
             return self.help = Some(0);
@@ -1101,6 +1134,8 @@ impl App {
             }
             (KeyCode::Char('x'), true) => Some(Action::Cancel),
             (KeyCode::Char('e'), true) => Some(Action::OpenLog),
+            (KeyCode::Char('v'), true) => Some(Action::ToggleVariablesPanel),
+            (KeyCode::Char('b'), true) if self.kind == Kind::Http => Some(Action::ToggleVars),
             (KeyCode::Char('o'), true) if self.kind == Kind::Grpc => {
                 Some(Action::ToggleSchemaSource)
             }
@@ -1151,7 +1186,67 @@ impl App {
             Focus::Schema => self.schema_input(key),
             Focus::Method => self.method_key(key.code),
             Focus::Response => self.response_key(key.code),
+            Focus::Captures => self.captures_key(key),
         }
+    }
+
+    /// Keys typed in the Variables panel. `Ctrl+D` removes the row and its variable.
+    fn captures_key(&mut self, key: KeyEvent) {
+        let removing =
+            key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL);
+        let name = self.captures.rows[self.captures.row].name_text();
+        self.captures.key(key);
+        if removing {
+            self.vars.remove(name.trim());
+            self.notice = Some(format!("removed ${}", name.trim()));
+        }
+    }
+
+    /// Runs the captures against the body of a response.
+    fn capture(&mut self, body: &str) {
+        for (name, expr) in self.captures.pairs(false).unwrap_or_default() {
+            let name = name.trim().trim_start_matches('$').to_owned();
+            if !vars::valid_name(&name) {
+                self.log.push(
+                    Level::Error,
+                    format!("capture `{name}`: not a valid variable name"),
+                );
+                continue;
+            }
+            if expr.trim().is_empty() {
+                continue;
+            }
+            match vars::query(body, &expr) {
+                Ok(value) => {
+                    self.log.push(Level::Info, format!("captured ${name}"));
+                    self.vars.set(&name, value);
+                }
+                Err(e) => self.log.push(Level::Error, format!("capture ${name}: {e}")),
+            }
+        }
+    }
+
+    fn toggle_variables_panel(&mut self) {
+        match self.left_tab {
+            LeftTab::Logs => {
+                self.left_tab = LeftTab::Variables;
+                self.set_focus(Focus::Captures);
+            }
+            LeftTab::Variables => {
+                self.left_tab = LeftTab::Logs;
+                if self.focus == Focus::Captures {
+                    self.set_focus(Focus::List);
+                }
+            }
+        }
+    }
+
+    fn toggle_vars(&mut self) {
+        self.use_vars = !self.use_vars;
+        self.notice = Some(format!(
+            "variables in the body: {}",
+            if self.use_vars { "on" } else { "off" }
+        ));
     }
 
     /// Keys typed in the body editor, which depends on the body kind.
@@ -1189,13 +1284,25 @@ impl App {
             Action::LoadSchema => self.load_schema(),
             Action::Cancel => self.cancel_call(),
             Action::OpenLog => self.open_log(),
+            Action::ToggleVariablesPanel => self.toggle_variables_panel(),
+            Action::ToggleVars => self.toggle_vars(),
             Action::ToggleSchemaSource => self.toggle_schema_mode(),
             Action::ToggleTls => self.insecure = !self.insecure,
             Action::NextPanel => {
-                self.set_focus(next_focus(self.focus, self.editor_focus(), self.kind));
+                self.set_focus(next_focus(
+                    self.focus,
+                    self.editor_focus(),
+                    self.kind,
+                    self.left_tab == LeftTab::Variables,
+                ));
             }
             Action::PrevPanel => {
-                self.set_focus(prev_focus(self.focus, self.editor_focus(), self.kind));
+                self.set_focus(prev_focus(
+                    self.focus,
+                    self.editor_focus(),
+                    self.kind,
+                    self.left_tab == LeftTab::Variables,
+                ));
             }
             Action::BackToList => self.set_focus(Focus::List),
         }
@@ -1931,6 +2038,20 @@ impl App {
 
     fn click(&mut self, at: Position, areas: &ui::Areas) {
         if areas.logs.contains(at) {
+            if let Some(tab) = ui::left_tab_at(areas.logs, at) {
+                if tab != self.left_tab {
+                    self.toggle_variables_panel();
+                }
+                return;
+            }
+            if self.left_tab == LeftTab::Variables {
+                self.set_focus(Focus::Captures);
+                let inner = ui::inner(areas.logs);
+                if inner.contains(at) {
+                    self.click_captures(at, inner);
+                }
+                return;
+            }
             return self.open_log();
         }
         if areas.tabs.contains(at) {
@@ -2000,6 +2121,12 @@ impl App {
             }
             if view.kind == Kind::Http
                 && self.request_tab == RequestTab::Body
+                && ui::vars_title_at(areas.body, at, self.use_vars)
+            {
+                return self.toggle_vars();
+            }
+            if view.kind == Kind::Http
+                && self.request_tab == RequestTab::Body
                 && ui::body_kind_title_at(areas.body, at, view.body_kind)
             {
                 self.focus_editor(self.editor_focus());
@@ -2054,6 +2181,13 @@ impl App {
                 };
                 return self.auth.select(*field, x);
             }
+        }
+    }
+
+    fn click_captures(&mut self, at: Position, inner: Rect) {
+        let (rows, _, _) = ui::captures_areas(inner, self.captures.rows.len());
+        if rows.contains(at) {
+            click_pairs(&mut self.captures, at, rows);
         }
     }
 
@@ -2167,6 +2301,7 @@ impl App {
         self.headers = HeaderEditor::default();
         self.params = HeaderEditor::default();
         self.auth = AuthEditor::default();
+        self.captures = HeaderEditor::default();
         self.schema_path = single_line("");
         self.schema_mode = SchemaMode::Reflection;
         self.suggestions = Suggestions::default();
@@ -2468,6 +2603,12 @@ impl App {
             format!("-> {} {}", request.method.as_str(), request.url),
         );
 
+        // History keeps the request as written, so `$name` is resolved again on a replay.
+        let mut sent = request.clone();
+        if self.use_vars {
+            sent.body = sent.body.map(|b| self.vars.apply(b));
+        }
+
         let (client, store, tx) = (self.client.clone(), self.store.clone(), self.tx.clone());
         tokio::spawn(async move {
             let trace = Trace::new({
@@ -2476,7 +2617,7 @@ impl App {
                     let _ = tx.send(Msg::Trace(line));
                 }
             });
-            let outcome: Outcome = client.send_traced(&request, &trace).await.into();
+            let outcome: Outcome = client.send_traced(&sent, &trace).await.into();
             if let Err(e) = store.record(&Request::Http(request), &outcome).await {
                 let _ = tx.send(Msg::Failed(format!("could not save history: {e}")));
             }
@@ -2682,9 +2823,10 @@ impl App {
 }
 
 /// The focus ring: list, URL, [schema, method (gRPC only)], the request editor, response.
-fn next_focus(f: Focus, editor: Focus, kind: Kind) -> Focus {
+fn next_focus(f: Focus, editor: Focus, kind: Kind, captures: bool) -> Focus {
     match (f, kind) {
-        (Focus::List, _) => Focus::Url,
+        (Focus::List, _) if captures => Focus::Captures,
+        (Focus::List | Focus::Captures, _) => Focus::Url,
         (Focus::Url, Kind::Http | Kind::Ws) => editor,
         (Focus::Url, Kind::Grpc) => Focus::Schema,
         (Focus::Url, Kind::Graphql) => Focus::Method,
@@ -2697,9 +2839,11 @@ fn next_focus(f: Focus, editor: Focus, kind: Kind) -> Focus {
     }
 }
 
-fn prev_focus(f: Focus, editor: Focus, kind: Kind) -> Focus {
+fn prev_focus(f: Focus, editor: Focus, kind: Kind, captures: bool) -> Focus {
     match (f, kind) {
         (Focus::List, _) => Focus::Response,
+        (Focus::Captures, _) => Focus::List,
+        (Focus::Url, _) if captures => Focus::Captures,
         (Focus::Url, _) => Focus::List,
         (Focus::Schema, _) => Focus::Url,
         (Focus::Method, Kind::Graphql) => Focus::Url,

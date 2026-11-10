@@ -57,13 +57,25 @@ pub(crate) fn draw_request_box(
     }
     let mut body_block = block_titled(Line::from(title_spans), lower_focused);
     if request.kind == Kind::Http && app.request_tab == RequestTab::Body {
-        body_block = body_block.title_top(
-            Line::styled(
-                body_kind_title(request.body_kind),
-                Style::new().fg(Color::Cyan),
+        body_block = body_block
+            .title_top(
+                Line::styled(
+                    body_kind_title(request.body_kind),
+                    Style::new().fg(Color::Cyan),
+                )
+                .right_aligned(),
             )
-            .right_aligned(),
-        );
+            .title_bottom(
+                Line::styled(
+                    vars_title(app.use_vars),
+                    Style::new().fg(if app.use_vars {
+                        Color::Green
+                    } else {
+                        Color::DarkGray
+                    }),
+                )
+                .right_aligned(),
+            );
     }
     let body_inner = body_block.inner(area);
     frame.render_widget(body_block, area);
@@ -309,7 +321,7 @@ fn draw_json_rows(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// How a list of name/value rows looks.
-struct Pairs {
+pub(crate) struct Pairs {
     /// Whether a name that cannot be an HTTP header is shown as invalid.
     validate_names: bool,
     /// Whether a value starting with `@` is a file.
@@ -333,6 +345,23 @@ pub(crate) fn draw_header_rows(frame: &mut Frame, app: &App, area: Rect) {
             files: false,
             value: "Value",
             add: "+ add header (Enter on the last value, Ctrl+D removes a row)",
+            from_start: false,
+        },
+    );
+}
+
+/// The Variables panel's capture inputs: variable name `:` path into the response.
+pub(crate) fn draw_capture_rows(frame: &mut Frame, app: &App, area: Rect) {
+    draw_pair_rows(
+        frame,
+        &app.captures,
+        app.focus == Focus::Captures,
+        area,
+        &Pairs {
+            validate_names: false,
+            files: false,
+            value: ".path.in.response",
+            add: "+ add capture (Enter on the last path)",
             from_start: false,
         },
     );

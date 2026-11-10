@@ -3,7 +3,7 @@
 use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
 
 use crate::client::{BodyKind, Kind};
-use crate::tui::app::{App, RequestTab, Tab};
+use crate::tui::app::{App, LeftTab, RequestTab, Tab};
 
 /// Left, center and right panels on a 12-column grid: 3-6-3.
 pub fn panel_areas(area: Rect) -> [Rect; 3] {
@@ -353,6 +353,57 @@ pub fn body_kind_title_at(body: Rect, at: Position, kind: BodyKind) -> bool {
     let width = body_kind_title(kind).len() as u16;
     // the title ends one column before the corner
     at.y == body.y && at.x >= body.right().saturating_sub(width + 1) && at.x < body.right() - 1
+}
+
+/// Width of the `Logs` label in the lower left panel's title.
+const LOGS_LABEL: u16 = 4;
+/// Width of the `Variables` label in the lower left panel's title.
+const VARIABLES_LABEL: u16 = 9;
+
+/// The tab under `at` on the top border of the lower left panel (`logs` is its outer
+/// rect). The title is ` Logs|Variables `.
+pub fn left_tab_at(logs: Rect, at: Position) -> Option<LeftTab> {
+    if at.y != logs.y {
+        return None;
+    }
+    let offset = at.x.checked_sub(logs.x + 2)?;
+    match offset {
+        o if o < LOGS_LABEL => Some(LeftTab::Logs),
+        o if o > LOGS_LABEL && o <= LOGS_LABEL + VARIABLES_LABEL => Some(LeftTab::Variables),
+        _ => None,
+    }
+}
+
+/// Splits the Variables panel's inner rect into the capture rows (with their "add" line),
+/// the captured values and a line of key hints. `count` is the number of capture rows.
+pub fn captures_areas(inner: Rect, count: usize) -> (Rect, Rect, Rect) {
+    let body = inner.height.saturating_sub(1);
+    let rows = ((count + 1) as u16).min(body * 2 / 3).max(1.min(body));
+    let [rows, values] =
+        Layout::vertical([Constraint::Length(rows), Constraint::Min(0)]).areas(Rect {
+            height: body,
+            ..inner
+        });
+    let hint = Rect::new(
+        inner.x,
+        inner.bottom().saturating_sub(1),
+        inner.width,
+        1.min(inner.height),
+    );
+    (rows, values, hint)
+}
+
+/// The "use variables" checkbox, on the right of the request box's bottom border.
+pub fn vars_title(on: bool) -> String {
+    format!(" [{}] $vars ", if on { 'x' } else { ' ' })
+}
+
+/// Whether `at` is on the "use variables" checkbox (`body` is the request box's outer rect).
+pub fn vars_title_at(body: Rect, at: Position, on: bool) -> bool {
+    let width = vars_title(on).len() as u16;
+    at.y + 1 == body.bottom()
+        && at.x >= body.right().saturating_sub(width + 1)
+        && at.x < body.right() - 1
 }
 
 /// Scroll offsets (rows, columns) that keep the cursor inside `area`.

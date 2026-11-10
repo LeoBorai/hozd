@@ -16,7 +16,7 @@ use super::super::layout::*;
 pub const HELP_REST: &str = "Tab focus | Ctrl+G kind | j/k move | Enter load | Ctrl+S send | Ctrl+N new | Ctrl+P method | ? keys";
 pub const HELP_GRPC: &str = "Ctrl+G kind | Ctrl+L schema | Ctrl+P method | Ctrl+N new | Ctrl+S send | Ctrl+X cancel | ? keys";
 
-pub const HELP_GRAPHQL: &str = "Ctrl+G kind | Ctrl+L introspect | Ctrl+P operation | Ctrl+N new | Ctrl+S send | Ctrl+T tabs | ? keys";
+pub const HELP_GRAPHQL: &str = "Ctrl+G kind | Ctrl+L schema | Ctrl+P operation | Ctrl+N new | Ctrl+S send | Ctrl+T tabs | ? keys";
 
 pub const HELP_WS: &str = "Ctrl+G kind | Ctrl+S connect, then send body | Ctrl+X close | Ctrl+N new | Ctrl+T headers | ? keys";
 

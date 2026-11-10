@@ -3283,3 +3283,65 @@ async fn a_header_typed_in_the_headers_tab_wins_over_the_auth_tab() {
     let req = h.app.try_request().unwrap();
     assert_eq!(req.headers, vec![Header::new("Authorization", "Token x")]);
 }
+
+// ---- project variables ---------------------------------------------------
+
+fn token_response() -> HttpResponse {
+    HttpResponse {
+        status: 200,
+        headers: vec![],
+        body: r#"{"data":{"token":"s3cr\"et"}}"#.into(),
+        elapsed: Duration::from_millis(1),
+    }
+}
+
+/// Types a capture row in the Variables panel.
+fn add_capture(app: &mut App, name: &str, path: &str) {
+    type_text(app, name);
+    app.handle_key(key(KeyCode::Enter));
+    type_text(app, path);
+}
+
+#[tokio::test]
+async fn a_captured_variable_replaces_dollar_name_in_the_next_body() {
+    let mut h = harness_with(Ok(token_response()), None).await;
+    // first request: capture
+    h.app.handle_key(ctrl('v')); // Variables panel, focus on the capture rows
+    add_capture(&mut h.app, "auth_token", ".data.token");
+    h.app.handle_key(key(KeyCode::Tab)); // URL
+    type_text(&mut h.app, "http://example.com/login");
+    h.app.send();
+    pump(&mut h, |a| !a.sending).await;
+    assert_eq!(h.app.vars.get("auth_token"), Some("s3cr\"et"));
+    assert!(text(&render(&h.app, 120, 30)).contains("$auth_token"));
+
+    // second request: use it
+    h.app.new_request();
+    type_text(&mut h.app, "http://example.com/me");
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, r#"{"t":"$auth_token","u":"$nope"}"#);
+    h.app.send();
+    pump(&mut h, |a| !a.sending).await;
+    let sent = h.fake.requests().pop().unwrap();
+    assert_eq!(
+        sent.body.unwrap().preview(),
+        r#"{"t":"s3cr\"et","u":"$nope"}"#
+    );
+
+    // switched off: sent as written
+    h.app.handle_key(ctrl('b'));
+    h.app.send();
+    pump(&mut h, |a| !a.sending).await;
+    let sent = h.fake.requests().pop().unwrap();
+    assert!(sent.body.unwrap().preview().contains("$auth_token"));
+}
+
+#[tokio::test]
+async fn deleting_a_capture_row_removes_its_variable() {
+    let mut h = harness().await;
+    h.app.handle_key(ctrl('v'));
+    h.app.vars.set("gone", "1".into());
+    type_text(&mut h.app, "gone");
+    h.app.handle_key(ctrl('d'));
+    assert_eq!(h.app.vars.get("gone"), None);
+}
