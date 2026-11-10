@@ -6,7 +6,7 @@ use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::layout::{Position, Rect};
-use ratatui_textarea::{CursorMove, Input, TextArea};
+use ratatui_textarea::{CursorMove, TextArea};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
@@ -1169,12 +1169,12 @@ impl App {
                     self.set_focus(Focus::Params);
                 }
                 _ => {
-                    self.url.input(Input::from(key));
+                    crate::tui::headers::edit(&mut self.url, key);
                 }
             },
             Focus::Body => self.body_key(key),
             Focus::Variables => {
-                self.variables.input(Input::from(key));
+                crate::tui::headers::edit(&mut self.variables, key);
             }
             Focus::Headers => {
                 self.headers.key(key);
@@ -1252,19 +1252,19 @@ impl App {
     /// Keys typed in the body editor, which depends on the body kind.
     fn body_key(&mut self, key: KeyEvent) {
         if self.kind != Kind::Http {
-            self.body.input(Input::from(key));
+            crate::tui::headers::edit(&mut self.body, key);
             return;
         }
         match self.body_kind {
             BodyKind::Text | BodyKind::JsonRaw => {
-                self.body.input(Input::from(key));
+                crate::tui::headers::edit(&mut self.body, key);
             }
             BodyKind::Json => self.json.key(key),
             BodyKind::Form => self.form.key(key),
             BodyKind::Multipart => self.multipart.key(key),
             BodyKind::File => {
                 if key.code != KeyCode::Enter {
-                    self.file.input(Input::from(key));
+                    crate::tui::headers::edit(&mut self.file, key);
                 }
             }
         }
@@ -1450,7 +1450,7 @@ impl App {
         match (key.code, self.schema_mode) {
             (KeyCode::Enter, _) => self.load_schema(),
             (_, SchemaMode::File) => {
-                self.schema_path.input(Input::from(key));
+                crate::tui::headers::edit(&mut self.schema_path, key);
             }
             (_, SchemaMode::Reflection) => {}
         }
@@ -1889,7 +1889,7 @@ impl App {
 
     /// Text waiting to be put on the clipboard, if a copy was requested.
     pub fn take_clipboard(&mut self) -> Option<String> {
-        self.clipboard.take()
+        crate::tui::headers::take_copied().or_else(|| self.clipboard.take())
     }
 
     // ---- mouse ----------------------------------------------------------
@@ -2333,6 +2333,17 @@ impl App {
     fn set_focus(&mut self, focus: Focus) {
         if focus == Focus::Response && self.focus != Focus::Response {
             self.inspect_preview = self.view().previewing;
+        }
+        if focus != self.focus {
+            for ta in [
+                &mut self.url,
+                &mut self.body,
+                &mut self.file,
+                &mut self.variables,
+                &mut self.schema_path,
+            ] {
+                ta.cancel_selection();
+            }
         }
         self.focus = focus;
         self.scroll = 0;

@@ -148,18 +148,21 @@ fn mark(check: &Check) -> Line<'static> {
 }
 
 /// The token wrapped to `width`, each part in its color.
-fn token_lines(token: &str, width: u16) -> Vec<Line<'static>> {
+fn token_lines(token: &str, width: u16, selected: Option<(usize, usize)>) -> Vec<Line<'static>> {
     let width = width.max(1) as usize;
     let chars: Vec<char> = token.chars().collect();
     let mut part = 0;
     let mut styled: Vec<(char, Style)> = Vec::with_capacity(chars.len());
-    for c in chars {
-        let style = if c == '.' {
+    for (i, c) in chars.into_iter().enumerate() {
+        let mut style = if c == '.' {
             part += 1;
             Style::new().fg(Color::White)
         } else {
             Style::new().fg([HEADER_COLOR, PAYLOAD_COLOR, SIGNATURE_COLOR][part.min(2)])
         };
+        if selected.is_some_and(|(from, to)| i >= from && i < to) {
+            style = style.patch(super::editor::SELECTION);
+        }
         styled.push((c, style));
     }
     styled
@@ -344,7 +347,12 @@ fn draw_jwt(
             if text.is_empty() {
                 frame.render_widget(Paragraph::new(Line::styled("Paste a JWT", dim)), token);
             } else {
-                let lines = token_lines(&text, token.width);
+                let selected = auth
+                    .token
+                    .selection_range()
+                    .filter(|_| here)
+                    .map(|(from, to)| (from.1, to.1));
+                let lines = token_lines(&text, token.width, selected);
                 let scroll = token_scroll(token.width, auth.token.cursor().1, token.height);
                 frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), token);
             }
