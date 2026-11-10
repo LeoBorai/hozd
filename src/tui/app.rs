@@ -1291,6 +1291,30 @@ impl App {
         ));
     }
 
+    /// `view` as it would be sent: `$name` replaced where the section's switch is on.
+    pub fn with_vars(&self, view: &RequestView) -> RequestView {
+        let mut out = view.clone();
+        if self.vars_headers {
+            for h in &mut out.headers {
+                h.value = self.vars.substitute(&h.value, false);
+            }
+        }
+        if out.kind == Kind::Http {
+            if self.vars_params
+                && let Some((base, query)) = out.url.split_once('?')
+            {
+                // `$` is percent-encoded in the address
+                let query = self.vars.substitute(&query.replace("%24", "$"), false);
+                out.url = format!("{base}?{query}");
+            }
+            if self.vars_body {
+                let json = matches!(out.body_kind, BodyKind::Json | BodyKind::JsonRaw);
+                out.body = self.vars.substitute(&out.body, json);
+            }
+        }
+        out
+    }
+
     /// `headers` with `$name` replaced in the values, when the headers switch is on.
     fn with_header_vars(&self, headers: &[Header]) -> Vec<Header> {
         let mut out = headers.to_vec();
