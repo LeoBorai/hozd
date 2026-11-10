@@ -4,7 +4,7 @@
 //! than it. Objects are made of `key: value` rows, arrays of bare value rows.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui_textarea::{Input, TextArea};
+use ratatui_textarea::TextArea;
 
 use crate::client::JsonValue;
 
@@ -426,7 +426,7 @@ impl JsonEditor {
             }
             _ => {
                 if let Some(cell) = self.cell_mut() {
-                    cell.input(Input::from(key));
+                    crate::tui::headers::edit(cell, key);
                 }
             }
         }

@@ -3,7 +3,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui_textarea::TextArea;
 
@@ -53,6 +53,10 @@ pub(crate) fn render_editor(
             })
             .collect(),
     };
+    let lines = match ta.selection_range().filter(|_| focused) {
+        Some((start, end)) => apply_selection(lines, start, end),
+        None => lines,
+    };
     frame.render_widget(
         Paragraph::new(lines).scroll((row_scroll as u16, col_scroll as u16)),
         area,
@@ -62,5 +66,69 @@ pub(crate) fn render_editor(
             area.x + (col - col_scroll) as u16,
             area.y + (row - row_scroll) as u16,
         ));
+    }
+}
+
+/// Selected text: dark on light blue, distinct from the plain and focused-cell backgrounds.
+pub(crate) const SELECTION: Style = Style::new().bg(Color::LightBlue).fg(Color::Black);
+
+/// Paints the `[start, end)` selection (row, char column) over the highlighted lines.
+fn apply_selection(
+    lines: Vec<Line<'static>>,
+    start: (usize, usize),
+    end: (usize, usize),
+) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(row, line)| {
+            if row < start.0 || row > end.0 {
+                return line;
+            }
+            let from = if row == start.0 { start.1 } else { 0 };
+            let to = if row == end.0 { end.1 } else { usize::MAX };
+            if from >= to {
+                return line;
+            }
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            let mut col = 0;
+            for span in line.spans {
+                let base = line.style.patch(span.style);
+                let mut run = String::new();
+                let mut run_sel = false;
+                for c in span.content.chars() {
+                    let sel = col >= from && col < to;
+                    if sel != run_sel && !run.is_empty() {
+                        let style = if run_sel { base.patch(SELECTION) } else { base };
+                        spans.push(Span::styled(std::mem::take(&mut run), style));
+                    }
+                    run_sel = sel;
+                    run.push(c);
+                    col += 1;
+                }
+                if !run.is_empty() {
+                    let style = if run_sel { base.patch(SELECTION) } else { base };
+                    spans.push(Span::styled(run, style));
+                }
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_marks_only_selected_chars() {
+        let out = apply_selection(vec![Line::raw("abcd")], (0, 1), (0, 3));
+        let marked: String = out[0]
+            .spans
+            .iter()
+            .filter(|s| s.style.bg == Some(Color::LightBlue))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(marked, "bc");
     }
 }

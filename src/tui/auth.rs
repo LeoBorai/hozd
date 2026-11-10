@@ -5,7 +5,7 @@
 //! [`AuthEditor::from_header`] takes a stored `Authorization` header apart again.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui_textarea::{Input, TextArea};
+use ratatui_textarea::TextArea;
 
 use crate::client::{
     Jwt, JwtError, Verification, basic_value, parse_basic, parse_token, secret_bytes, token_value,
@@ -237,7 +237,7 @@ impl AuthEditor {
             _ => {
                 let field = self.field;
                 if let Some(ta) = self.input_mut(field) {
-                    ta.input(Input::from(key));
+                    crate::tui::headers::edit(ta, key);
                     // a pasted token is one line, however it was wrapped
                     if ta.lines().len() > 1 {
                         let joined: String = ta

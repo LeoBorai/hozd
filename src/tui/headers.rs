@@ -59,6 +59,40 @@ impl Row {
     }
 }
 
+thread_local! {
+    /// Text copied or cut in a field, waiting for the event loop to put it on the clipboard.
+    static COPIED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Takes the text a field copied or cut since the last call.
+pub(crate) fn take_copied() -> Option<String> {
+    COPIED.with(|c| c.borrow_mut().take())
+}
+
+/// Feeds a key to a text field. Ctrl+A selects all text instead of jumping to line start;
+/// Cmd+A/C/X (terminals with the kitty keyboard protocol) select all, copy and cut.
+pub(crate) fn edit(ta: &mut TextArea<'static>, key: KeyEvent) {
+    let selected = ta.selection_range().is_some();
+    if key.modifiers.contains(KeyModifiers::SUPER) {
+        match key.code {
+            KeyCode::Char('a') => ta.select_all(),
+            KeyCode::Char('c') if selected => {
+                ta.copy();
+                COPIED.with(|c| *c.borrow_mut() = Some(ta.yank_text()));
+            }
+            KeyCode::Char('x') if selected => {
+                ta.cut();
+                COPIED.with(|c| *c.borrow_mut() = Some(ta.yank_text()));
+            }
+            _ => {}
+        }
+    } else if key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        ta.select_all();
+    } else {
+        ta.input(Input::from(key));
+    }
+}
+
 pub(crate) fn single_line(text: &str) -> TextArea<'static> {
     let mut ta = TextArea::new(vec![text.to_owned()]);
     ta.move_cursor(CursorMove::End);
@@ -257,7 +291,7 @@ impl HeaderEditor {
                 self.enter_cell(self.row, Col::Name, true)
             }
             _ => {
-                self.cell_mut().input(Input::from(key));
+                edit(self.cell_mut(), key);
             }
         }
     }
@@ -395,5 +429,25 @@ mod tests {
         assert_eq!(ok.spans[0].style.fg, Some(Color::Cyan));
         let text: String = ok.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "Accept: */*");
+    }
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+
+    #[test]
+    fn cmd_c_copies_selection_and_keeps_text() {
+        let mut ta = single_line("hello");
+        edit(
+            &mut ta,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::SUPER),
+        );
+        edit(
+            &mut ta,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::SUPER),
+        );
+        assert_eq!(ta.lines(), ["hello"]);
+        assert_eq!(take_copied().as_deref(), Some("hello"));
     }
 }
