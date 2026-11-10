@@ -393,6 +393,17 @@ pub fn captures_areas(inner: Rect, count: usize) -> (Rect, Rect, Rect) {
     (rows, values, hint)
 }
 
+/// Whether the `tab` of a `kind` request has a "use variables" switch: headers (or metadata)
+/// for every kind, and REST's params and body.
+pub fn vars_tab(kind: crate::client::Kind, tab: crate::tui::app::RequestTab) -> bool {
+    use crate::tui::app::RequestTab as T;
+    match tab {
+        T::Headers => true,
+        T::Params | T::Body => kind == crate::client::Kind::Http,
+        _ => false,
+    }
+}
+
 /// The "use variables" checkbox, on the right of the request box's bottom border.
 pub fn vars_title(on: bool) -> String {
     format!(" [{}] $vars ", if on { 'x' } else { ' ' })

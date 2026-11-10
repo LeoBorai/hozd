@@ -165,7 +165,7 @@ proto_include = ["~/work/protos"]
 | `Ctrl+G`          | Cycle the request between REST, GraphQL, gRPC and WebSocket |
 | `Ctrl+Y`          | REST: next body type (also a click on the type shown on the Body box's border) |
 | `Ctrl+V`          | Switch the lower left panel between Logs and Variables |
-| `Ctrl+B`          | REST: use `$variables` in the body (also the `[x] $vars` box under the Body box) |
+| `Ctrl+B`          | Use `$variables` in the current section: REST URL params, headers or body; GraphQL, gRPC and WebSocket headers/metadata (also the `[x] $vars` box under the box) |
 | Drag (reading panel) | Select text; it is copied to the clipboard on release (`y` copies the selection, or everything if none) |
 | `Ctrl+E` / click the Logs box | Open the log in the reading panel (newest last) |
 | `Enter` (response focus) | Open the response body in the reading panel |
@@ -180,13 +180,17 @@ Capture a value from one response and send it in the next request, like Hurl's c
 1. `Ctrl+V` switches the lower left panel from **Logs** to **Variables**. Each row there is a
    capture: a variable name and a path into the JSON response body, such as `auth_token` and
    `.data.token`. Paths are a jq subset: `.a.b`, `.items[0].id`, `.items[-1]`, `.["odd key"]`.
+   A value that does not start with `.` is a literal: `"abc"` or `'abc'` captures `abc` (quotes
+   dropped), and `abc` captures `abc`.
 2. Send the request. Every capture runs on the response; the panel lists the values captured
    (`$auth_token = ...`) and the log says which succeeded or failed.
-3. In a later REST request write `$auth_token` in the body: a JSON string, a raw JSON value, text,
-   or a form or multipart value. It is replaced when the request is sent.
+3. In a later REST request write `$auth_token` in a URL param value, a header value (Auth
+   included), or the body: a JSON string, a raw JSON value, text, or a form or multipart value.
+   It is replaced when the request is sent.
 
 A `$name` that no variable matches is sent as written. `Ctrl+B` (or a click on `[x] $vars`)
-turns the substitution off for the body, to send a literal `$auth_token`. History keeps the
+turns the substitution off for the section on screen (URL Params, Headers or Body; each has its
+own switch), to send a literal `$auth_token`. History keeps the
 request as written, so a replay uses the current value.
 
 `Ctrl+D` on a row deletes the capture and its variable. `Ctrl+N` clears the capture rows but

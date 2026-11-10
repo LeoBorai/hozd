@@ -57,25 +57,23 @@ pub(crate) fn draw_request_box(
     }
     let mut body_block = block_titled(Line::from(title_spans), lower_focused);
     if request.kind == Kind::Http && app.request_tab == RequestTab::Body {
-        body_block = body_block
-            .title_top(
-                Line::styled(
-                    body_kind_title(request.body_kind),
-                    Style::new().fg(Color::Cyan),
-                )
-                .right_aligned(),
+        body_block = body_block.title_top(
+            Line::styled(
+                body_kind_title(request.body_kind),
+                Style::new().fg(Color::Cyan),
             )
-            .title_bottom(
-                Line::styled(
-                    vars_title(app.use_vars),
-                    Style::new().fg(if app.use_vars {
-                        Color::Green
-                    } else {
-                        Color::DarkGray
-                    }),
-                )
-                .right_aligned(),
-            );
+            .right_aligned(),
+        );
+    }
+    if vars_tab(request.kind, app.request_tab) {
+        let on = app.vars_on(app.request_tab);
+        body_block = body_block.title_bottom(
+            Line::styled(
+                vars_title(on),
+                Style::new().fg(if on { Color::Green } else { Color::DarkGray }),
+            )
+            .right_aligned(),
+        );
     }
     let body_inner = body_block.inner(area);
     frame.render_widget(body_block, area);

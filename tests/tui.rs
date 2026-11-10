@@ -3345,3 +3345,106 @@ async fn deleting_a_capture_row_removes_its_variable() {
     h.app.handle_key(ctrl('d'));
     assert_eq!(h.app.vars.get("gone"), None);
 }
+
+#[tokio::test]
+async fn variables_apply_to_params_and_headers_with_their_own_toggles() {
+    let mut h = harness().await;
+    h.app.vars.set("tok", "abc".into());
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "http://example.com/a?");
+    type_text(&mut h.app, "q");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "$tok");
+    // headers tab
+    h.app.request_tab = RequestTab::Headers;
+    h.app.focus = Focus::Headers;
+    type_text(&mut h.app, "X-Token");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "Bearer $tok");
+
+    h.app.send();
+    pump(&mut h, |a| !a.sending).await;
+    let sent = h.fake.requests().pop().unwrap();
+    assert_eq!(sent.url, "http://example.com/a?q=abc");
+    assert_eq!(sent.headers[0].value, "Bearer abc");
+
+    // headers off: only params substituted
+    h.app.handle_key(ctrl('b'));
+    assert!(!h.app.vars_headers && h.app.vars_params && h.app.vars_body);
+    h.app.send();
+    pump(&mut h, |a| !a.sending).await;
+    let sent = h.fake.requests().pop().unwrap();
+    assert_eq!(sent.url, "http://example.com/a?q=abc");
+    assert_eq!(sent.headers[0].value, "Bearer $tok");
+
+    // params off
+    h.app.request_tab = RequestTab::Params;
+    h.app.handle_key(ctrl('b'));
+    h.app.send();
+    pump(&mut h, |a| !a.sending).await;
+    let sent = h.fake.requests().pop().unwrap();
+    assert!(
+        sent.url.contains("%24tok") || sent.url.contains("$tok"),
+        "{}",
+        sent.url
+    );
+}
+
+#[tokio::test]
+async fn variables_apply_to_graphql_headers() {
+    let mut h = harness().await;
+    h.app.vars.set("tok", "abc".into());
+    while h.app.kind != Kind::Graphql {
+        h.app.handle_key(ctrl('g'));
+    }
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "http://example.com/g");
+    h.app.request_tab = RequestTab::Headers;
+    h.app.focus = Focus::Headers;
+    type_text(&mut h.app, "Authorization");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "Bearer $tok");
+    h.app.request_tab = RequestTab::Body;
+    h.app.focus = Focus::Body;
+    type_text(&mut h.app, "{ a }");
+    h.app.send();
+    pump(&mut h, |a| !a.sending).await;
+    let sent = h.fake.requests().pop().unwrap();
+    let auth = sent
+        .headers
+        .iter()
+        .find(|x| x.name == "Authorization")
+        .unwrap();
+    assert_eq!(auth.value, "Bearer abc");
+}
+
+#[tokio::test]
+async fn literal_captures_register_on_enter_and_on_blur() {
+    let mut h = harness().await;
+    h.app.handle_key(ctrl('v'));
+    add_capture(&mut h.app, "a", "'one'");
+    assert_eq!(h.app.vars.get("a"), None);
+    h.app.handle_key(key(KeyCode::Enter));
+    assert_eq!(h.app.vars.get("a"), Some("one"));
+    type_text(&mut h.app, "b");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "two");
+    h.app.handle_key(key(KeyCode::Tab)); // blur
+    assert_eq!(h.app.vars.get("b"), Some("two"));
+}
+
+#[tokio::test]
+async fn the_http_preview_shows_variable_values() {
+    let mut h = harness().await;
+    h.app.vars.set("tok", "abc".into());
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "http://example.com/a?");
+    type_text(&mut h.app, "q");
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "$tok");
+    let out = text(&render(&h.app, 120, 40));
+    assert!(out.contains("/a?q=abc"), "{out}");
+    h.app.handle_key(ctrl('b'));
+    let out = text(&render(&h.app, 120, 40));
+    assert!(!out.contains("/a?q=abc"), "{out}");
+}
