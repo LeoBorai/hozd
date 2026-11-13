@@ -31,6 +31,7 @@ fn ok_response() -> HttpResponse {
         headers: vec![Header::new("x-h", "1")],
         body: "{\"x\":1}".into(),
         elapsed: Duration::from_millis(7),
+        image: None,
     }
 }
 
@@ -366,6 +367,42 @@ async fn send_is_non_blocking_then_records_history_and_shows_response() {
         out.contains("200") && out.contains("x-h") && out.contains("\"x\": 1"),
         "{out}"
     );
+}
+
+fn image_response(bytes: Vec<u8>) -> HttpResponse {
+    HttpResponse {
+        status: 200,
+        headers: vec![Header::new("content-type", "image/png")],
+        body: format!("<image/png, {} bytes>", bytes.len()),
+        elapsed: Duration::from_millis(7),
+        image: Some(bytes.into()),
+    }
+}
+
+async fn send_for_render(reply: HttpResponse) -> String {
+    let mut h = harness_with(Ok(reply), None).await;
+    h.app.handle_key(key(KeyCode::Tab));
+    type_text(&mut h.app, "http://x/img");
+    h.app.handle_key(ctrl('s'));
+    pump(&mut h, |a| a.live.is_some() && !a.history.is_empty()).await;
+    text(&render(&h.app, 120, 30))
+}
+
+#[tokio::test]
+async fn image_responses_are_drawn_in_the_body() {
+    let mut png = Vec::new();
+    image::RgbImage::from_pixel(8, 8, image::Rgb([255, 0, 0]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let out = send_for_render(image_response(png)).await;
+    assert!(out.contains('\u{2580}'), "{out}");
+    assert!(!out.contains("bytes>"), "{out}");
+}
+
+#[tokio::test]
+async fn undecodable_images_say_so() {
+    let out = send_for_render(image_response(b"garbage".to_vec())).await;
+    assert!(out.contains("cannot decode image"), "{out}");
 }
 
 #[tokio::test]
@@ -1132,6 +1169,7 @@ async fn with_response(body: &str) -> Harness {
             headers: vec![],
             body: body.into(),
             elapsed: Duration::from_millis(1),
+            image: None,
         }),
         None,
     )
@@ -3292,6 +3330,7 @@ fn token_response() -> HttpResponse {
         headers: vec![],
         body: r#"{"data":{"token":"s3cr\"et"}}"#.into(),
         elapsed: Duration::from_millis(1),
+        image: None,
     }
 }
 

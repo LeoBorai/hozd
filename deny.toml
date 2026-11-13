@@ -43,6 +43,14 @@ skip = [
     { crate = "crypto-common@0.1.6", reason = "digest 0.10 (sha2, sqlx-core) still uses 0.1; digest 0.11 (tungstenite) uses 0.2" },
     { crate = "digest@0.10.7", reason = "sha2 (sqlx-core) still uses 0.10; sha1 (tungstenite) uses 0.11" },
     { crate = "syn@2.0.119", reason = "sqlx-macros and other proc-macros still use syn 2; others use 3" },
+    { crate = "rustix@0.38.44", reason = "ratatui-image 11 still uses 0.38; crossterm and tempfile use 1.x" },
+    { crate = "linux-raw-sys@0.4.15", reason = "rustix 0.38 (ratatui-image) still uses 0.4; rustix 1.x uses 0.12" },
+    { crate = "rand@0.8.8", reason = "ratatui-image 11 still uses 0.8; tungstenite and quantette use 0.10" },
+    { crate = "rand_core@0.6.4", reason = "rand 0.8 (ratatui-image) still uses 0.6; rand 0.10 uses 0.10" },
+    { crate = "thiserror@1.0.69", reason = "ratatui-image 11 still uses 1.x; the rest use 2.x" },
+    { crate = "thiserror-impl@1.0.69", reason = "thiserror 1.x (ratatui-image) still uses 1.x; thiserror 2.x uses 2.x" },
+    { crate = "miniz_oxide@0.8.9", reason = "png still uses 0.8 directly; flate2 uses 0.9" },
+    { crate = "ordered-float@2.10.1", reason = "serde-value (prost-reflect) still uses 2.x; quantette (ratatui-image) uses 5.x" },
 ]
 
 [sources]

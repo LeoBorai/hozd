@@ -22,6 +22,7 @@ fn response(status: u16, body: &str) -> Outcome {
         headers: vec![Header::new("x-a", "1"), Header::new("x-a", "2")],
         body: body.into(),
         elapsed: Duration::from_millis(42),
+        image: None,
     })
 }
 

@@ -360,8 +360,8 @@ impl JsonEditor {
         let end = self.subtree_end(i);
         let last = self.rows.get(end).is_none_or(|r| r.depth < depth);
         if depth > 0 && last {
-            for j in i..end {
-                self.rows[j].depth -= 1;
+            for row in &mut self.rows[i..end] {
+                row.depth -= 1;
             }
             self.select(i, JsonCol::Key);
         }

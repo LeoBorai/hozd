@@ -1,9 +1,11 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
 
 use super::common::{add_missing_header, trace_url_resolve};
 use super::trace::version_name;
+use super::types::is_image_content_type;
 use super::{
     ClientError, Header, HttpClient, HttpRequest, HttpResponse, Method, Trace, trace_certificate,
 };
@@ -100,16 +102,35 @@ impl HttpClient for ReqwestClient {
             .iter()
             .map(|(k, v)| Header::new(k.as_str(), String::from_utf8_lossy(v.as_bytes())))
             .collect();
-        let body = res
-            .text()
-            .await
-            .map_err(|e| ClientError::Transport(describe(&e)))?;
+        let image_type = res
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .filter(|v| is_image_content_type(v))
+            .map(str::to_owned);
+        let (body, image) = if let Some(content_type) = image_type {
+            let bytes = res
+                .bytes()
+                .await
+                .map_err(|e| ClientError::Transport(describe(&e)))?;
+            (
+                format!("<{content_type}, {} bytes>", bytes.len()),
+                Some(Arc::from(&bytes[..])),
+            )
+        } else {
+            let body = res
+                .text()
+                .await
+                .map_err(|e| ClientError::Transport(describe(&e)))?;
+            (body, None)
+        };
 
         Ok(HttpResponse {
             status,
             headers,
             body,
             elapsed: started.elapsed(),
+            image,
         })
     }
 }

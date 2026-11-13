@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -6,6 +7,8 @@ use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::layout::{Position, Rect};
+use ratatui_image::picker::Picker as ImagePicker;
+use ratatui_image::protocol::StatefulProtocol;
 use ratatui_textarea::{CursorMove, TextArea};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
@@ -306,6 +309,9 @@ pub enum SuggestTarget {
     Body,
 }
 
+/// Image bytes and their drawable form, `None` when they do not decode.
+type CachedImage = (Arc<[u8]>, Option<StatefulProtocol>);
+
 pub struct App {
     pub tab: Tab,
     pub focus: Focus,
@@ -394,6 +400,12 @@ pub struct App {
     inspect_preview: bool,
     last_response_click: Option<Instant>,
     pub scroll: u16,
+    /// Draws image response bodies. Halfblocks until [`App::set_image_picker`] gives it
+    /// the protocol the terminal speaks.
+    image_picker: ImagePicker,
+    /// The image body drawn last, decoded for [`App::image_picker`]; `None` inside when
+    /// its bytes are not an image the decoder knows.
+    image_cache: RefCell<Option<CachedImage>>,
     pub should_quit: bool,
     /// The list item the last click landed on; clicking it again loads it.
     last_click: Option<(Tab, usize)>,
@@ -488,6 +500,8 @@ impl App {
             inspect_preview: false,
             last_response_click: None,
             scroll: 0,
+            image_picker: ImagePicker::halfblocks(),
+            image_cache: RefCell::new(None),
             should_quit: false,
             last_click: None,
             client,
@@ -1205,11 +1219,21 @@ impl App {
         }
     }
 
-    /// Keys typed in the Variables panel. `Ctrl+D` removes the row and its variable.
+    /// Keys typed in the Variables panel. `Ctrl+D` removes the row and its variable,
+    /// `Ctrl+F` freezes or unfreezes the row's variable.
     fn captures_key(&mut self, key: KeyEvent) {
-        let removing =
-            key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let removing = key.code == KeyCode::Char('d') && ctrl;
         let name = self.captures.rows[self.captures.row].name_text();
+        if key.code == KeyCode::Char('f') && ctrl {
+            let name = name.trim().trim_start_matches('$');
+            self.notice = Some(match self.vars.toggle_frozen(name) {
+                Some(true) => format!("froze ${name}"),
+                Some(false) => format!("unfroze ${name}"),
+                None => format!("${name} has no value to freeze"),
+            });
+            return;
+        }
         self.captures.key(key);
         if key.code == KeyCode::Enter {
             self.register_literals();
@@ -1246,6 +1270,11 @@ impl App {
                 continue;
             }
             if expr.trim().is_empty() {
+                continue;
+            }
+            if self.vars.is_frozen(&name) {
+                self.log
+                    .push(Level::Info, format!("${name} is frozen, kept"));
                 continue;
             }
             match vars::capture(body, &expr) {
@@ -1974,6 +2003,29 @@ impl App {
     }
 
     /// Text waiting to be put on the clipboard, if a copy was requested.
+    /// Uses `picker` to draw image response bodies from now on.
+    pub fn set_image_picker(&mut self, picker: ImagePicker) {
+        self.image_picker = picker;
+        self.image_cache.replace(None);
+    }
+
+    /// Runs `f` with the drawable form of the image `bytes`, decoding them only when they
+    /// differ from the last image drawn; `None` when they cannot be decoded.
+    pub(crate) fn with_image<R>(
+        &self,
+        bytes: &Arc<[u8]>,
+        f: impl FnOnce(Option<&mut StatefulProtocol>) -> R,
+    ) -> R {
+        let mut cache = self.image_cache.borrow_mut();
+        if !cache.as_ref().is_some_and(|(b, _)| Arc::ptr_eq(b, bytes)) {
+            let protocol = image::load_from_memory(bytes)
+                .ok()
+                .map(|img| self.image_picker.new_resize_protocol(img));
+            *cache = Some((Arc::clone(bytes), protocol));
+        }
+        f(cache.as_mut().and_then(|(_, p)| p.as_mut()))
+    }
+
     pub fn take_clipboard(&mut self) -> Option<String> {
         crate::tui::headers::take_copied().or_else(|| self.clipboard.take())
     }

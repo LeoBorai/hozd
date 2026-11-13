@@ -3,6 +3,9 @@
 //!
 //! The path language is the jq subset that selects a value: `.`, `.a.b`, `.items[0].id`,
 //! `.["odd key"]`, `.[-1]`. A `$name` that no variable matches is left as written.
+//!
+//! A frozen (locked) variable keeps its value: captures no longer overwrite it until it is
+//! unfrozen or removed.
 
 use serde_json::Value;
 
@@ -12,13 +15,37 @@ use crate::client::{Body, JsonValue, Part, PartValue};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Vars {
     values: Vec<(String, String)>,
+    frozen: Vec<String>,
 }
 
 impl Vars {
-    pub fn set(&mut self, name: &str, value: String) {
+    /// Sets `name` unless it is frozen; returns whether the value was stored.
+    pub fn set(&mut self, name: &str, value: String) -> bool {
+        if self.is_frozen(name) {
+            return false;
+        }
         match self.values.iter_mut().find(|(n, _)| n == name) {
             Some((_, v)) => *v = value,
             None => self.values.push((name.to_owned(), value)),
+        }
+        true
+    }
+
+    pub fn is_frozen(&self, name: &str) -> bool {
+        self.frozen.iter().any(|n| n == name)
+    }
+
+    /// Freezes `name` when it has a value, unfreezes it when frozen. Returns the new state,
+    /// `None` when there is no such variable.
+    pub fn toggle_frozen(&mut self, name: &str) -> Option<bool> {
+        if self.is_frozen(name) {
+            self.frozen.retain(|n| n != name);
+            Some(false)
+        } else if self.get(name).is_some() {
+            self.frozen.push(name.to_owned());
+            Some(true)
+        } else {
+            None
         }
     }
 
@@ -31,10 +58,12 @@ impl Vars {
 
     pub fn remove(&mut self, name: &str) {
         self.values.retain(|(n, _)| n != name);
+        self.frozen.retain(|n| n != name);
     }
 
     pub fn clear(&mut self) {
         self.values.clear();
+        self.frozen.clear();
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
@@ -289,6 +318,22 @@ mod tests {
             v.substitute(r#"{"k":"x-$t","n":$n}"#, true),
             r#"{"k":"x-a\"b","n":5}"#
         );
+    }
+
+    #[test]
+    fn frozen_variables_keep_their_value() {
+        let mut v = vars(&[("tok", "abc")]);
+        assert_eq!(v.toggle_frozen("nope"), None);
+        assert_eq!(v.toggle_frozen("tok"), Some(true));
+        assert!(!v.set("tok", "new".into()));
+        assert_eq!(v.get("tok"), Some("abc"));
+        assert_eq!(v.toggle_frozen("tok"), Some(false));
+        assert!(v.set("tok", "new".into()));
+        assert_eq!(v.get("tok"), Some("new"));
+        v.toggle_frozen("tok");
+        v.remove("tok");
+        assert!(!v.is_frozen("tok"));
+        assert!(v.set("tok", "again".into()));
     }
 
     #[test]

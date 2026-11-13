@@ -6,6 +6,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use ratatui_image::{Resize, StatefulImage};
+
 use crate::history::Outcome;
 
 use crate::tui::app::{App, Focus};
@@ -157,6 +159,29 @@ pub(crate) fn draw_right(frame: &mut Frame, app: &App, outcome: Option<&Outcome>
     let streaming = matches!(outcome, Some(Outcome::Grpc(g)) if !g.messages.is_empty());
     if app.sending && !streaming {
         draw_spinner(frame, body_inner, app.frame);
+        return;
+    }
+    if let Some(Outcome::Response(r)) = outcome
+        && let Some(bytes) = &r.image
+    {
+        let drawn = app.with_image(bytes, |protocol| match protocol {
+            Some(protocol) => {
+                frame.render_stateful_widget(
+                    StatefulImage::default().resize(Resize::Fit(None)),
+                    body_inner,
+                    protocol,
+                );
+                true
+            }
+            None => false,
+        });
+        if !drawn {
+            let line = Line::styled("cannot decode image", Style::new().fg(Color::Red));
+            frame.render_widget(
+                Paragraph::new(vec![line, Line::raw(r.body.clone())]),
+                body_inner,
+            );
+        }
         return;
     }
     frame.render_widget(
