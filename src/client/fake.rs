@@ -46,6 +46,7 @@ mod tests {
             headers: vec![],
             body: "hi".into(),
             elapsed: Duration::ZERO,
+            image: None,
         })));
         let client: SharedHttp = fake.clone();
         let res = client.send(&HttpRequest::default()).await.unwrap();

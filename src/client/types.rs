@@ -1,5 +1,6 @@
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -107,6 +108,28 @@ pub struct HttpResponse {
     pub headers: Vec<Header>,
     pub body: String,
     pub elapsed: Duration,
+    /// The raw bytes of a response whose `Content-Type` is `image/*`; `body` then only
+    /// describes it. Kept in memory only: history stores the description.
+    #[serde(skip)]
+    pub image: Option<Arc<[u8]>>,
+}
+
+impl HttpResponse {
+    /// The `Content-Type` header value, if any.
+    pub fn content_type(&self) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("content-type"))
+            .map(|h| h.value.as_str())
+    }
+}
+
+/// Whether a `Content-Type` value names an image (`image/png; charset=...` included).
+pub fn is_image_content_type(value: &str) -> bool {
+    value
+        .split(';')
+        .next()
+        .is_some_and(|mime| mime.trim().to_ascii_lowercase().starts_with("image/"))
 }
 
 /// What the user asked to execute.
@@ -234,9 +257,18 @@ mod tests {
             headers: vec![Header::new("X", "y")],
             body: "ok".into(),
             elapsed: Duration::from_millis(12),
+            image: None,
         };
         let json = serde_json::to_string(&res).unwrap();
         assert_eq!(serde_json::from_str::<HttpResponse>(&json).unwrap(), res);
+    }
+
+    #[test]
+    fn detects_image_content_types() {
+        assert!(is_image_content_type("image/png"));
+        assert!(is_image_content_type("Image/JPEG; q=1"));
+        assert!(!is_image_content_type("application/json"));
+        assert!(!is_image_content_type(""));
     }
 
     #[test]

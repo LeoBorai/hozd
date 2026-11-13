@@ -56,6 +56,11 @@ pub async fn run(mut app: App, mut rx: UnboundedReceiver<Msg>) -> std::io::Resul
         ratatui::restore();
     });
 
+    // Asks the terminal which image protocol it speaks before the event stream owns stdin.
+    if let Ok(picker) = ratatui_image::picker::Picker::from_query_stdio() {
+        app.set_image_picker(picker);
+    }
+
     let mut events = EventStream::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(140));
 

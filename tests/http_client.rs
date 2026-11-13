@@ -324,3 +324,33 @@ async fn a_missing_file_fails_before_anything_is_sent() {
     assert!(matches!(err, ClientError::Body(_)), "{err:?}");
     assert!(server.received_requests().await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn image_responses_keep_their_bytes() {
+    let png: &[u8] = b"\x89PNG\r\n\x1a\nnot really";
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(png, "image/png"))
+        .mount(&server)
+        .await;
+    let res = ReqwestClient::new()
+        .send(&req(Method::Get, server.uri()))
+        .await
+        .unwrap();
+    assert_eq!(res.image.as_deref(), Some(png));
+    assert_eq!(res.body, format!("<image/png, {} bytes>", png.len()));
+}
+
+#[tokio::test]
+async fn text_responses_have_no_image() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("hi"))
+        .mount(&server)
+        .await;
+    let res = ReqwestClient::new()
+        .send(&req(Method::Get, server.uri()))
+        .await
+        .unwrap();
+    assert_eq!((res.image, res.body.as_str()), (None, "hi"));
+}

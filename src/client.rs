@@ -20,7 +20,9 @@ pub use grpc::{
 };
 pub use http::ReqwestClient;
 pub use trace::{Trace, trace_certificate, trace_resolve};
-pub use types::{Header, HttpRequest, HttpResponse, Kind, Method, Outcome, Request};
+pub use types::{
+    Header, HttpRequest, HttpResponse, Kind, Method, Outcome, Request, is_image_content_type,
+};
 pub use ws::{
     SharedWs, TungsteniteWs, WsClient, WsClose, WsDirection, WsEvent, WsMessage, WsOutcome,
     WsRequest, WsSession,

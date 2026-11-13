@@ -560,6 +560,7 @@ mod tests {
             headers: vec![],
             body: body.to_string(),
             elapsed: Duration::ZERO,
+            image: None,
         }
     }
 
