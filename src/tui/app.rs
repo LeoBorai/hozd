@@ -1219,11 +1219,21 @@ impl App {
         }
     }
 
-    /// Keys typed in the Variables panel. `Ctrl+D` removes the row and its variable.
+    /// Keys typed in the Variables panel. `Ctrl+D` removes the row and its variable,
+    /// `Ctrl+F` freezes or unfreezes the row's variable.
     fn captures_key(&mut self, key: KeyEvent) {
-        let removing =
-            key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let removing = key.code == KeyCode::Char('d') && ctrl;
         let name = self.captures.rows[self.captures.row].name_text();
+        if key.code == KeyCode::Char('f') && ctrl {
+            let name = name.trim().trim_start_matches('$');
+            self.notice = Some(match self.vars.toggle_frozen(name) {
+                Some(true) => format!("froze ${name}"),
+                Some(false) => format!("unfroze ${name}"),
+                None => format!("${name} has no value to freeze"),
+            });
+            return;
+        }
         self.captures.key(key);
         if key.code == KeyCode::Enter {
             self.register_literals();
@@ -1260,6 +1270,11 @@ impl App {
                 continue;
             }
             if expr.trim().is_empty() {
+                continue;
+            }
+            if self.vars.is_frozen(&name) {
+                self.log
+                    .push(Level::Info, format!("${name} is frozen, kept"));
                 continue;
             }
             match vars::capture(body, &expr) {

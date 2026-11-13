@@ -80,8 +80,10 @@ fn draw_variables(frame: &mut Frame, app: &App, inner: Rect) {
             app.vars
                 .iter()
                 .map(|(name, value)| {
+                    let frozen = app.vars.is_frozen(name);
                     Line::from(vec![
                         Span::styled(format!("${name}"), Style::new().fg(Color::Cyan)),
+                        Span::styled(if frozen { " (frozen)" } else { "" }, dim),
                         Span::styled(" = ", dim),
                         Span::raw(value.replace('\n', " ")),
                     ])
@@ -91,7 +93,10 @@ fn draw_variables(frame: &mut Frame, app: &App, inner: Rect) {
         frame.render_widget(Paragraph::new(lines), values);
     }
     frame.render_widget(
-        Paragraph::new(Line::styled("Ctrl+D: delete row and variable", dim)),
+        Paragraph::new(Line::styled(
+            "Ctrl+D: delete row and variable · Ctrl+F: freeze/unfreeze",
+            dim,
+        )),
         hint,
     );
 }

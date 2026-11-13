@@ -193,7 +193,11 @@ turns the substitution off for the section on screen (URL Params, Headers or Bod
 own switch), to send a literal `$auth_token`. History keeps the
 request as written, so a replay uses the current value.
 
-`Ctrl+D` on a row deletes the capture and its variable. `Ctrl+N` clears the capture rows but
+`Ctrl+F` on a row freezes (locks) its variable: later responses no longer overwrite the value,
+and the panel marks it `(frozen)`. `Ctrl+F` again unfreezes it. A variable needs a value before
+it can be frozen.
+
+`Ctrl+D` on a row deletes the capture and its variable (and its freeze). `Ctrl+N` clears the capture rows but
 keeps the captured values. Variables live until hozd quits.
 
 ### REST body types
