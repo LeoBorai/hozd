@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -426,6 +426,8 @@ pub struct App {
     pub center_tab: CenterTab,
     pub history: Vec<Summary>,
     pub history_sel: usize,
+    /// First visible row of the left list, per tab; moves only to keep the selection in view.
+    list_scroll: [Cell<usize>; 3],
     /// Hosts whose History group is collapsed.
     pub history_closed: HashSet<String>,
     /// Whether the editor builds an HTTP or a gRPC request.
@@ -592,6 +594,7 @@ impl App {
             center_tab: CenterTab::default(),
             history: Vec::new(),
             history_sel: 0,
+            list_scroll: Default::default(),
             history_closed: HashSet::new(),
             kind: Kind::Http,
             method: Method::Get,
@@ -1054,6 +1057,25 @@ impl App {
         ) {
             self.focus = self.editor_focus();
         }
+    }
+
+    /// First visible row of the left list on the current tab: the offset stays put while
+    /// the selection moves inside the window and scrolls only when it leaves it.
+    pub fn left_offset(&self, selected_row: Option<usize>, height: u16) -> usize {
+        let cell = &self.list_scroll[self.tab as usize];
+        let Some(sel) = selected_row else {
+            cell.set(0);
+            return 0;
+        };
+        let h = (height as usize).max(1);
+        let mut off = cell.get();
+        if sel < off {
+            off = sel;
+        } else if sel >= off + h {
+            off = sel + 1 - h;
+        }
+        cell.set(off);
+        off
     }
 
     pub fn selected_summary(&self) -> Option<&Summary> {
@@ -3133,19 +3155,19 @@ impl App {
             Tab::Projects => {
                 let rows = self.panel_rows().len();
                 let selected_row = (rows > 0).then_some(self.projects_sel);
-                let row = y_in_list as usize + ui::list_offset(selected_row, height);
+                let row = y_in_list as usize + self.left_offset(selected_row, height);
                 (row < rows).then_some(row)
             }
             Tab::Stored => {
                 let rows = ui::stored_row_map(self);
                 let selected_row = rows.iter().position(|r| *r == Some(self.stored_sel));
-                let offset = ui::list_offset(selected_row, height);
+                let offset = self.left_offset(selected_row, height);
                 rows.get(y_in_list as usize + offset).copied().flatten()
             }
             Tab::History => {
                 let rows = self.history_rows().len();
                 let selected_row = (rows > 0).then_some(self.history_sel);
-                let row = y_in_list as usize + ui::list_offset(selected_row, height);
+                let row = y_in_list as usize + self.left_offset(selected_row, height);
                 (row < rows).then_some(row)
             }
         };

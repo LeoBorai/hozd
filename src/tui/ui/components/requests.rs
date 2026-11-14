@@ -51,7 +51,7 @@ pub(crate) fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
     };
     let mut state = ListState::default()
         .with_selected(selected_row)
-        .with_offset(list_offset(selected_row, list.height));
+        .with_offset(app.left_offset(selected_row, list.height));
     let highlight = match (focused, app.tab) {
         // the same colors as selected text
         (true, Tab::Projects) => SELECTION.add_modifier(Modifier::BOLD),
