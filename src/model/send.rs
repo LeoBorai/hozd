@@ -1,10 +1,14 @@
 //! Turns a stored project request into something the client can send.
 
-use crate::client::{Body, Field, Header, HttpRequest, Method, Part, Request};
+use crate::client::{
+    Body, Field, Header, HttpRequest, Method as ClientMethod, Part, PartValue, Request, split_query,
+};
 
-use super::common::Server;
+use super::common::{NameValue, Server};
 use super::project::{ApiRequest, Project, Request as ProjectRequest};
-use super::rest::{BodyContent, FieldKind, ParamLocation};
+use super::rest::{
+    BodyContent, FieldKind, FormField, Method, ParamLocation, RestParam, RestRequest,
+};
 
 /// The HTTP request `request` describes, with the project's first server as the base URL
 /// when the request names none. Disabled parameters and fields are left out.
@@ -69,9 +73,126 @@ pub fn to_client_request(project: &Project, request: &ProjectRequest) -> Request
     });
 
     Request::Http(HttpRequest {
-        method: rest.method.as_str().parse::<Method>().unwrap_or_default(),
+        method: rest
+            .method
+            .as_str()
+            .parse::<ClientMethod>()
+            .unwrap_or_default(),
         url,
         headers,
         body,
     })
+}
+
+/// The stored request `existing` with the edits in `edited` applied: the inverse of
+/// [`to_client_request`]. Parts of the stored request the client has no notion of
+/// (descriptions, schemas, scripts, responses, disabled parameters) are kept.
+pub fn from_client_request(existing: &RestRequest, edited: &HttpRequest) -> RestRequest {
+    let mut rest = existing.clone();
+    rest.method = Method::parse(edited.method.as_str());
+
+    let (url, query) = split_query(&edited.url);
+    let (server, path) = split_server(&url);
+    rest.server = server;
+    rest.path = path;
+
+    // Rebuilds the enabled parameters of `location` from `pairs`, keeping what the stored
+    // parameter of the same name carries beyond its value.
+    let rebuild =
+        |rest: &mut RestRequest, location: ParamLocation, pairs: Vec<(String, String)>| {
+            let old = std::mem::take(&mut rest.params);
+            let (mut same, other): (Vec<_>, Vec<_>) =
+                old.into_iter().partition(|p| p.location == location);
+            let disabled: Vec<_> = same.iter().filter(|p| p.pair.disabled).cloned().collect();
+            same.retain(|p| !p.pair.disabled);
+            let mut params = Vec::new();
+            for (name, value) in pairs {
+                let mut param = match same.iter().position(|p| p.pair.name == name) {
+                    Some(i) => same.remove(i),
+                    None => RestParam::new(location, &name, ""),
+                };
+                param.pair.value = value;
+                params.push(param);
+            }
+            // keep the original order: the other locations first, as stored
+            rest.params = other;
+            rest.params.extend(params);
+            rest.params.extend(disabled);
+        };
+    rebuild(&mut rest, ParamLocation::Query, query);
+    let headers = edited
+        .headers
+        .iter()
+        .map(|h| (h.name.clone(), h.value.clone()))
+        .collect();
+    rebuild(&mut rest, ParamLocation::Header, headers);
+
+    rest.body = match &edited.body {
+        None => None,
+        Some(body) => {
+            let mut stored = rest.body.take().unwrap_or_default();
+            let language = match &stored.content {
+                BodyContent::Raw { language, .. } => language.clone(),
+                _ => None,
+            };
+            let text_field = |name: &str, value: &str, kind| FormField {
+                pair: NameValue::new(name, value),
+                kind,
+                content_type: None,
+            };
+            stored.content = match body {
+                Body::Text(t) => BodyContent::Raw {
+                    text: t.clone(),
+                    language: language.filter(|l| l != "json"),
+                },
+                Body::JsonRaw(t) => BodyContent::Raw {
+                    text: t.clone(),
+                    language: Some("json".into()),
+                },
+                Body::Json(v) => BodyContent::Raw {
+                    text: v.to_json_pretty(),
+                    language: Some("json".into()),
+                },
+                Body::Form(fields) => BodyContent::FormUrlEncoded {
+                    fields: fields
+                        .iter()
+                        .map(|f| text_field(&f.name, &f.value, FieldKind::Text))
+                        .collect(),
+                },
+                Body::Multipart(parts) => BodyContent::Multipart {
+                    fields: parts
+                        .iter()
+                        .map(|p| match &p.value {
+                            PartValue::Text(t) => text_field(&p.name, t, FieldKind::Text),
+                            PartValue::File(f) => text_field(&p.name, f, FieldKind::File),
+                        })
+                        .collect(),
+                },
+                Body::File(path) => BodyContent::Binary {
+                    file: Some(path.clone()),
+                },
+            };
+            Some(stored)
+        }
+    };
+    rest
+}
+
+/// `http://host:80/a/b` -> (`http://host:80`, `/a/b`); a URL starting with `/` has no
+/// server; `{{baseUrl}}/a` -> (`{{baseUrl}}`, `/a`).
+fn split_server(url: &str) -> (Option<String>, String) {
+    if url.starts_with('/') {
+        return (None, url.to_owned());
+    }
+    let after_scheme = url.find("://").map_or(0, |i| i + 3);
+    match url[after_scheme..].find('/') {
+        Some(i) => (
+            Some(url[..after_scheme + i].to_owned()),
+            url[after_scheme + i..].to_owned(),
+        ),
+        None => (
+            Some(url.to_owned()).filter(|u| !u.is_empty()),
+            String::new(),
+        ),
+    }
 }

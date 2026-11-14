@@ -3668,3 +3668,136 @@ async fn projects_tab_adds_request_and_metadata_tabs_over_the_center() {
     let out = text(&render(&h.app, 120, 30));
     assert!(!out.contains("Metadata"), "tabs only in the Projects tab");
 }
+
+#[tokio::test]
+async fn backspace_deletes_an_empty_directory_and_a_request_without_asking() {
+    let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
+    create_project(&mut h.app, "Pets");
+    h.app.handle_key(ctrl_shift('d'));
+    h.app.handle_key(key(KeyCode::Backspace));
+    assert!(h.app.confirm.is_none());
+    assert!(h.app.projects[0].directories.is_empty());
+
+    h.app.handle_key(ctrl_shift('r'));
+    assert_eq!(h.app.projects[0].requests.len(), 1);
+    h.app.handle_key(key(KeyCode::Backspace));
+    assert!(h.app.projects[0].requests.is_empty());
+
+    // the project line itself is never deleted this way
+    h.app.handle_key(key(KeyCode::Home));
+    h.app.handle_key(key(KeyCode::Backspace));
+    assert_eq!(h.app.projects.len(), 1);
+}
+
+#[tokio::test]
+async fn a_directory_with_contents_asks_and_ok_deletes_it() {
+    let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
+    create_project(&mut h.app, "Pets");
+    h.app.handle_key(ctrl_shift('d'));
+    h.app.handle_key(ctrl_shift('r')); // inside the directory
+    h.app.handle_key(key(KeyCode::Up)); // back on the directory
+    h.app.handle_key(key(KeyCode::Backspace));
+
+    let confirm = h.app.confirm.clone().expect("asks first");
+    assert!(!confirm.ok, "Cancel is active by default");
+    let out = text(&render(&h.app, 120, 30));
+    assert!(
+        out.contains("1 request") && out.contains("Ok") && out.contains("Cancel"),
+        "{out}"
+    );
+
+    // Cancel keeps it
+    h.app.handle_key(key(KeyCode::Enter));
+    assert!(h.app.confirm.is_none());
+    assert_eq!(h.app.projects[0].directories.len(), 1);
+
+    // Ok deletes the directory and what is in it
+    h.app.handle_key(key(KeyCode::Backspace));
+    h.app.handle_key(key(KeyCode::Left));
+    assert!(h.app.confirm.as_ref().unwrap().ok);
+    h.app.handle_key(key(KeyCode::Enter));
+    assert!(h.app.projects[0].directories.is_empty());
+
+    let want = h.app.projects.clone();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while h.store.list_projects().await.unwrap() != want {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the deletion reaches the database");
+}
+
+#[tokio::test]
+async fn escape_closes_the_question_without_deleting() {
+    let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
+    create_project(&mut h.app, "Pets");
+    h.app.handle_key(ctrl_shift('d'));
+    h.app.handle_key(ctrl_shift('d')); // a directory inside a directory
+    h.app.handle_key(key(KeyCode::Up));
+    h.app.handle_key(key(KeyCode::Backspace));
+    assert!(h.app.confirm.is_some());
+    h.app.handle_key(key(KeyCode::Esc));
+    assert!(h.app.confirm.is_none());
+    assert_eq!(h.app.projects[0].directories.len(), 1);
+}
+
+#[tokio::test]
+async fn editing_a_loaded_project_request_updates_it_live_and_saves_on_leaving() {
+    let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
+    create_project(&mut h.app, "Pets");
+    h.app.handle_key(ctrl_shift('r')); // selects "New request"
+    h.app.handle_key(key(KeyCode::Enter)); // loads it into the editor
+    assert_eq!(h.app.focus, Focus::Url);
+
+    type_text(&mut h.app, "http://pets.test/pets");
+    let rest = h.app.projects[0].requests[0].api.as_rest().unwrap();
+    assert_eq!(rest.server.as_deref(), Some("http://pets.test"));
+    assert_eq!(rest.path, "/pets", "copied while typing");
+
+    // still editing: not written to the database yet
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let stored = h.store.list_projects().await.unwrap();
+    let saved = stored[0].requests[0].api.as_rest().unwrap();
+    assert_eq!(saved.path, "", "{saved:?}");
+
+    // leaving the editor saves
+    h.app.handle_key(key(KeyCode::Esc));
+    let want = h.app.projects.clone();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while h.store.list_projects().await.unwrap() != want {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("saved when focus left the editor");
+
+    // the list previews what was stored
+    assert_eq!(h.app.view().request.url, "http://pets.test/pets");
+}
+
+#[tokio::test]
+async fn sending_saves_the_bound_request() {
+    let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
+    create_project(&mut h.app, "Pets");
+    h.app.handle_key(ctrl_shift('r'));
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "http://pets.test/a");
+    h.app.handle_key(ctrl('s')); // send while still in the editor
+
+    let want = h.app.projects.clone();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while h.store.list_projects().await.unwrap() != want {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("saved on send");
+    let rest = want[0].requests[0].api.as_rest().unwrap();
+    assert_eq!(rest.path, "/a");
+}

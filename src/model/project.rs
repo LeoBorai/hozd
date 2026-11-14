@@ -94,6 +94,18 @@ impl Directory {
         }
     }
 
+    /// How many directories and requests lie inside this one, at any depth.
+    pub fn contents(&self) -> (usize, usize) {
+        let mut dirs = self.directories.len();
+        let mut requests = self.requests.len();
+        for d in &self.directories {
+            let (nested_dirs, nested_requests) = d.contents();
+            dirs += nested_dirs;
+            requests += nested_requests;
+        }
+        (dirs, requests)
+    }
+
     fn collect<'a>(&'a self, out: &mut Vec<&'a Request>) {
         out.extend(self.requests.iter());
         for d in &self.directories {
@@ -178,6 +190,22 @@ impl Project {
             Some(p) => p.requests.push(request),
             None => self.requests.push(request),
         }
+    }
+
+    /// Removes the directory or request `id` (a directory takes everything in it with
+    /// it); `false` when this project holds none.
+    pub fn remove_node(&mut self, id: &str) -> bool {
+        fn remove(dirs: &mut Vec<Directory>, requests: &mut Vec<Request>, id: &str) -> bool {
+            let before = dirs.len() + requests.len();
+            dirs.retain(|d| d.id != id);
+            requests.retain(|r| r.id != id);
+            if dirs.len() + requests.len() != before {
+                return true;
+            }
+            dirs.iter_mut()
+                .any(|d| remove(&mut d.directories, &mut d.requests, id))
+        }
+        remove(&mut self.directories, &mut self.requests, id)
     }
 
     /// Sets the name and description of the project, directory or request `id`; `false`

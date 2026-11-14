@@ -22,7 +22,7 @@ use crate::client::{
     with_query,
 };
 use crate::history::{History, HistoryEntry, Outcome, Summary};
-use crate::model::{Directory, Project, to_client_request};
+use crate::model::{Directory, Project, from_client_request, to_client_request};
 use crate::project::{Loaded, Template};
 use crate::vars::{self, Vars};
 
@@ -58,6 +58,16 @@ pub enum CenterTab {
     Request,
     /// Title and description of the selected project, directory or request.
     Metadata,
+}
+
+/// A yes/no question over the screen: Ok runs the pending deletion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Confirm {
+    pub message: String,
+    /// Whether Ok (rather than Cancel) is the active option.
+    pub ok: bool,
+    /// The directory or request to delete.
+    node: String,
 }
 
 /// One visible line of the Projects tree.
@@ -382,6 +392,15 @@ pub struct App {
     pub open_nodes: HashSet<String>,
     /// Selected row of [`App::project_rows`].
     pub projects_sel: usize,
+    /// The project request the editor is bound to: its edits are copied into the project
+    /// as they are made, and saved when the request is sent or the editor loses focus.
+    bound: Option<String>,
+    /// The editor's request as last copied into the project.
+    bound_last: Option<HttpRequest>,
+    /// Edits copied into the project but not yet written to the database.
+    bound_dirty: bool,
+    /// The deletion waiting for an answer.
+    pub confirm: Option<Confirm>,
     /// Id of the project whose context is open in the Projects list.
     pub project_ctx: Option<String>,
     /// The name being typed for a new project, while the Projects list asks for one.
@@ -549,6 +568,10 @@ impl App {
             open_nodes: HashSet::new(),
             projects_sel: 0,
             project_ctx: None,
+            confirm: None,
+            bound: None,
+            bound_last: None,
+            bound_dirty: false,
             naming: None,
             meta_title: single_line(""),
             meta_desc: TextArea::default(),
@@ -1192,6 +1215,85 @@ impl App {
         }
     }
 
+    /// Deletes the selected directory or request; a directory with anything in it asks
+    /// first.
+    fn delete_selected(&mut self) {
+        let Some(row) = self.selected_project_row() else {
+            return;
+        };
+        let Some(project) = self.projects.get_mut(row.project) else {
+            return;
+        };
+        match row.kind {
+            ProjectRowKind::Project { .. } => {}
+            ProjectRowKind::Request { .. } => self.remove_node(&row.id),
+            ProjectRowKind::Directory { .. } => {
+                let (dirs, requests) = project
+                    .directory_mut(&row.id)
+                    .map_or((0, 0), |d| d.contents());
+                if dirs + requests == 0 {
+                    self.remove_node(&row.id);
+                } else {
+                    let plural = |n: usize, word: &str| {
+                        format!("{n} {word}{}", if n == 1 { "" } else { "s" })
+                    };
+                    self.confirm = Some(Confirm {
+                        message: format!(
+                            "Delete \"{}\" with {} and {}?",
+                            row.name,
+                            plural(requests, "request"),
+                            plural(dirs, "directory").replace("directorys", "directories"),
+                        ),
+                        ok: false,
+                        node: row.id,
+                    });
+                }
+            }
+        }
+    }
+
+    fn remove_node(&mut self, id: &str) {
+        if self.bound.as_deref() == Some(id) {
+            self.bound = None;
+            self.bound_dirty = false;
+        }
+        for pi in 0..self.projects.len() {
+            if self.projects[pi].remove_node(id) {
+                self.persist_project(pi);
+                break;
+            }
+        }
+        self.open_nodes.remove(id);
+        self.last_node = None;
+        self.last_click = None;
+        self.projects_sel = self
+            .projects_sel
+            .min(self.panel_rows().len().saturating_sub(1));
+        self.note_node();
+    }
+
+    /// Keys while the delete question is open: arrows pick Ok or Cancel, Enter answers.
+    fn confirm_key(&mut self, code: KeyCode, ctrl: bool) {
+        let Some(confirm) = &mut self.confirm else {
+            return;
+        };
+        match code {
+            KeyCode::Char('c') if ctrl => self.should_quit = true,
+            KeyCode::Left | KeyCode::Char('h') => confirm.ok = true,
+            KeyCode::Right | KeyCode::Char('l') => confirm.ok = false,
+            KeyCode::Tab | KeyCode::BackTab => confirm.ok = !confirm.ok,
+            KeyCode::Esc => self.confirm = None,
+            KeyCode::Enter => {
+                if let Some(c) = self.confirm.take()
+                    && c.ok
+                {
+                    self.remove_node(&c.node);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Keys typed while a new project's name is being entered.
     fn naming_key(&mut self, key: KeyEvent) {
         let Some(name) = &mut self.naming else {
@@ -1337,6 +1439,65 @@ impl App {
             crate::tui::headers::edit(&mut self.meta_desc, key);
         }
         self.apply_meta();
+    }
+
+    /// Copies the editor's request into the project request it is bound to, when it
+    /// changed, and saves once focus is somewhere other than an editor box.
+    fn sync_bound(&mut self) {
+        if let Some(id) = self.bound.clone()
+            && self.kind == Kind::Http
+        {
+            let edited = self.editor_request();
+            if self.bound_last.as_ref() != Some(&edited) {
+                self.bound_last = Some(edited.clone());
+                let found = self
+                    .projects
+                    .iter()
+                    .position(|p| p.all_requests().iter().any(|r| r.id == id));
+                match found {
+                    None => self.bound = None,
+                    Some(pi) => {
+                        if let Some(request) = self.projects[pi].request_mut(&id) {
+                            let crate::model::ApiRequest::Rest(old) = &request.api;
+                            let new = from_client_request(old, &edited);
+                            if *old != new {
+                                request.api = crate::model::ApiRequest::Rest(new);
+                                self.bound_dirty = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !matches!(
+            self.focus,
+            Focus::Url
+                | Focus::Body
+                | Focus::Variables
+                | Focus::Headers
+                | Focus::Params
+                | Focus::Auth
+                | Focus::Schema
+                | Focus::Method
+        ) {
+            self.flush_bound();
+        }
+    }
+
+    /// Writes the bound request's project to the database if it has unsaved edits.
+    fn flush_bound(&mut self) {
+        if !self.bound_dirty {
+            return;
+        }
+        self.bound_dirty = false;
+        if let Some(id) = &self.bound
+            && let Some(pi) = self
+                .projects
+                .iter()
+                .position(|p| p.all_requests().iter().any(|r| &r.id == id))
+        {
+            self.persist_project(pi);
+        }
     }
 
     /// Selects a center tab, moving focus off boxes the tab does not show.
@@ -1527,6 +1688,7 @@ impl App {
 
     pub fn handle_key(&mut self, key: KeyEvent) {
         self.key_inner(key);
+        self.sync_bound();
         self.sync_meta();
         // a query pasted or loaded into the address moves once the address loses focus
         if self.focus != Focus::Url {
@@ -1555,20 +1717,24 @@ impl App {
             return self.help_key(key.code, ctrl);
         }
 
+        if self.confirm.is_some() {
+            return self.confirm_key(key.code, ctrl);
+        }
         if self.naming.is_some() && self.focus == Focus::List {
             return self.naming_key(key);
         }
 
-        // Ctrl+Shift+R / Ctrl+Shift+D add a request / directory to the open project.
+        // In the Projects list: Ctrl+Shift+R / Ctrl+Shift+D add a request / directory to
+        // the open project; Backspace deletes the selected directory or request.
         if ctrl
             && self.tab == Tab::Projects
             && self.focus == Focus::List
             && let KeyCode::Char(c) = key.code
-            && (key.modifiers.contains(KeyModifiers::SHIFT) || c.is_ascii_uppercase())
         {
-            match c.to_ascii_lowercase() {
-                'r' => return self.create_node(false),
-                'd' => return self.create_node(true),
+            let shifted = key.modifiers.contains(KeyModifiers::SHIFT) || c.is_ascii_uppercase();
+            match (c.to_ascii_lowercase(), shifted) {
+                ('r', true) => return self.create_node(false),
+                ('d', true) => return self.create_node(true),
                 _ => {}
             }
         }
@@ -2462,6 +2628,7 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Enter => self.activate(),
+            KeyCode::Backspace if self.tab == Tab::Projects => self.delete_selected(),
             KeyCode::Char('m') if self.tab == Tab::Projects => {
                 self.set_center_tab(CenterTab::Metadata);
             }
@@ -2543,6 +2710,7 @@ impl App {
     pub fn handle_mouse(&mut self, event: MouseEvent, screen: Rect) {
         self.absorb_query();
         self.handle_mouse_event(event, screen);
+        self.sync_bound();
         self.sync_meta();
         self.refresh_suggestions();
     }
@@ -2550,6 +2718,9 @@ impl App {
     fn handle_mouse_event(&mut self, event: MouseEvent, screen: Rect) {
         let areas = ui::areas_with(screen, self.view().request.kind, self.center_tab());
         let at = Position::new(event.column, event.row);
+        if self.confirm.is_some() {
+            return;
+        }
         if self.help.is_some() {
             return;
         }
@@ -2980,6 +3151,9 @@ impl App {
             self.status = Some("a request is running; Ctrl+X cancels it first".into());
             return;
         }
+        self.flush_bound();
+        self.bound = None;
+        self.bound_last = None;
         self.method = Method::Get;
         self.url = single_line("");
         self.body = TextArea::default();
@@ -3065,6 +3239,7 @@ impl App {
 
     /// Copies the selected entry into the editor so it can be modified and sent.
     fn activate(&mut self) {
+        let mut bind = None;
         let request = match self.tab {
             Tab::Projects => {
                 let row = self.projects_sel;
@@ -3075,6 +3250,7 @@ impl App {
                     self.open_panel_row(row);
                     return;
                 }
+                bind = self.selected_project_row().map(|r| r.id);
                 self.selected_project_request()
             }
             Tab::Stored => self.selected_template().map(|t| t.template.to_request()),
@@ -3085,11 +3261,19 @@ impl App {
         };
         if let Some(request) = request {
             self.load_request(&request);
+            if let (Some(id), Request::Http(_)) = (bind, &request) {
+                // edits to the loaded request now flow into the project request
+                self.bound = Some(id);
+                self.bound_last = Some(self.editor_request());
+            }
             self.set_focus(Focus::Url);
         }
     }
 
     pub fn load_request(&mut self, request: &Request) {
+        self.flush_bound();
+        self.bound = None;
+        self.bound_last = None;
         let request = match request {
             Request::Http(request) => request,
             Request::Grpc(request) => return self.load_grpc_request(request),
@@ -3206,6 +3390,8 @@ impl App {
 
     pub fn send(&mut self) {
         self.absorb_query();
+        self.sync_bound();
+        self.flush_bound();
         if self.sending {
             self.status = Some("a request is already in flight".into());
             return;

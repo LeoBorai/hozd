@@ -51,18 +51,13 @@ pub(crate) fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
     let mut state = ListState::default()
         .with_selected(selected_row)
         .with_offset(list_offset(selected_row, list.height));
-    // Projects rows carry dark-gray key hints, which a gray highlight would hide.
-    let selection_bg = if app.tab == Tab::Projects {
-        Color::Blue
-    } else {
-        Color::DarkGray
-    };
-    let highlight = if focused {
-        Style::new()
-            .bg(selection_bg)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::new().add_modifier(Modifier::BOLD)
+    let highlight = match (focused, app.tab) {
+        // the same colors as selected text
+        (true, Tab::Projects) => SELECTION.add_modifier(Modifier::BOLD),
+        (true, _) => Style::new()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+        (false, _) => Style::new().add_modifier(Modifier::BOLD),
     };
     frame.render_stateful_widget(
         List::new(items).highlight_style(highlight),
@@ -87,29 +82,29 @@ pub(crate) fn project_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>)
     let rows = app
         .panel_rows()
         .into_iter()
-        .map(|row| {
+        .map(|row| -> Line<'static> {
             let r = match row {
                 PanelRow::CreateProject => {
-                    return ListItem::new(match &app.naming {
+                    return match &app.naming {
                         Some(name) => Line::from(vec![
                             Span::styled("+ ", green),
                             Span::raw(name.lines().join(" ")),
                             Span::styled(" \u{23ce}", gray),
                         ]),
                         None => Line::styled("+ Create project", green),
-                    });
+                    };
                 }
                 PanelRow::CreateDirectory => {
-                    return ListItem::new(Line::from(vec![
+                    return Line::from(vec![
                         Span::styled("+ Create directory", green),
                         Span::styled("  Ctrl+Shift+D", gray),
-                    ]));
+                    ]);
                 }
                 PanelRow::CreateRequest => {
-                    return ListItem::new(Line::from(vec![
+                    return Line::from(vec![
                         Span::styled("+ Create request", green),
                         Span::styled("  Ctrl+Shift+R", gray),
-                    ]));
+                    ]);
                 }
                 PanelRow::Node(r) => r,
             };
@@ -119,7 +114,7 @@ pub(crate) fn project_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>)
             } else {
                 r.name.clone()
             };
-            let folder = |open: bool, bold: bool| {
+            let folder = |open: bool, bold: bool, icon: &str| {
                 let style = Style::new().fg(Color::Cyan);
                 let style = if bold {
                     style.add_modifier(Modifier::BOLD)
@@ -129,23 +124,50 @@ pub(crate) fn project_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>)
                 vec![
                     indent.clone(),
                     Span::raw(if open { "\u{25bc} " } else { "\u{25b6} " }),
-                    Span::styled(format!("\u{1F4C1} {name}"), style),
+                    Span::styled(format!("{icon} {name}"), style),
                 ]
             };
-            ListItem::new(Line::from(match &r.kind {
-                ProjectRowKind::Project { open } => folder(*open, true),
-                ProjectRowKind::Directory { open } => folder(*open, false),
+            Line::from(match &r.kind {
+                ProjectRowKind::Project { open } => folder(*open, true, "\u{2731}"),
+                ProjectRowKind::Directory { open } => folder(*open, false, "\u{2756}"),
                 ProjectRowKind::Request { method } => {
                     let m = match method.parse::<Method>() {
                         Ok(m) => method_span(m),
                         Err(_) => Span::raw(format!("{method:<6}")),
                     };
-                    vec![indent, m, Span::raw(format!(" {name}"))]
+                    vec![
+                        indent,
+                        Span::styled("\u{269b} ", Style::new().fg(Color::Yellow)),
+                        m,
+                        Span::raw(format!(" {name}")),
+                    ]
                 }
-            }))
+            })
+        })
+        .enumerate()
+        .map(|(i, line)| {
+            // the selected row takes the highlight's colors, as selected text does
+            ListItem::new(if app.focus == Focus::List && i == app.projects_sel {
+                uncolored(line)
+            } else {
+                line
+            })
         })
         .collect();
     (rows, Some(app.projects_sel))
+}
+
+/// `line` without its colors, so the highlight's own colors show.
+fn uncolored(line: Line<'static>) -> Line<'static> {
+    Line::from(
+        line.spans
+            .into_iter()
+            .map(|mut span| {
+                span.style.fg = None;
+                span
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 pub(crate) fn stored_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) {

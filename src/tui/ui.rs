@@ -53,6 +53,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if app.picker.is_some() {
         draw_picker(frame, app, frame.area());
     }
+    if let Some(confirm) = &app.confirm {
+        draw_confirm(frame, confirm, frame.area());
+    }
     if app.help.is_some() {
         draw_help(frame, app, frame.area());
     }

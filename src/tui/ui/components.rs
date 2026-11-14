@@ -3,6 +3,7 @@
 mod address;
 mod auth;
 mod center;
+mod confirm;
 mod editor;
 mod frame;
 mod help;
@@ -21,6 +22,7 @@ mod suggestions;
 pub(crate) use address::*;
 pub(crate) use auth::*;
 pub(crate) use center::*;
+pub(crate) use confirm::*;
 pub(crate) use editor::*;
 pub(crate) use frame::*;
 pub(crate) use help::*;
