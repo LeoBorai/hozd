@@ -13,6 +13,7 @@ use crate::tui::{App, Msg};
 pub mod client;
 pub mod config;
 pub mod history;
+pub mod model;
 pub mod paths;
 pub mod project;
 pub mod tui;
