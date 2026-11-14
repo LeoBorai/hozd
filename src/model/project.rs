@@ -124,7 +124,80 @@ pub struct Project {
     pub extensions: Extensions,
 }
 
+fn find_dir<'a>(dirs: &'a mut [Directory], id: &str) -> Option<&'a mut Directory> {
+    for d in dirs {
+        if d.id == id {
+            return Some(d);
+        }
+        if let Some(found) = find_dir(&mut d.directories, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_request<'a>(dirs: &'a mut [Directory], id: &str) -> Option<&'a mut Request> {
+    for d in dirs {
+        if let Some(r) = d.requests.iter_mut().find(|r| r.id == id) {
+            return Some(r);
+        }
+        if let Some(found) = find_request(&mut d.directories, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 impl Project {
+    /// The directory with `id`, at any depth.
+    pub fn directory_mut(&mut self, id: &str) -> Option<&mut Directory> {
+        find_dir(&mut self.directories, id)
+    }
+
+    /// The request with `id`, at any depth.
+    pub fn request_mut(&mut self, id: &str) -> Option<&mut Request> {
+        if let Some(r) = self.requests.iter_mut().find(|r| r.id == id) {
+            return Some(r);
+        }
+        find_request(&mut self.directories, id)
+    }
+
+    /// Adds `dir` inside the directory `parent`, or at the project root when `parent` is
+    /// `None` or unknown.
+    pub fn add_directory(&mut self, parent: Option<&str>, dir: Directory) {
+        match parent.and_then(|id| find_dir(&mut self.directories, id)) {
+            Some(p) => p.directories.push(dir),
+            None => self.directories.push(dir),
+        }
+    }
+
+    /// Adds `request` inside the directory `parent`, or at the project root when `parent`
+    /// is `None` or unknown.
+    pub fn add_request(&mut self, parent: Option<&str>, request: Request) {
+        match parent.and_then(|id| find_dir(&mut self.directories, id)) {
+            Some(p) => p.requests.push(request),
+            None => self.requests.push(request),
+        }
+    }
+
+    /// Sets the name and description of the project, directory or request `id`; `false`
+    /// when this project holds none.
+    pub fn set_meta(&mut self, id: &str, name: &str, description: Option<String>) -> bool {
+        if self.id == id {
+            self.name = name.to_owned();
+            self.description = description;
+        } else if let Some(d) = self.directory_mut(id) {
+            d.name = name.to_owned();
+            d.description = description;
+        } else if let Some(r) = self.request_mut(id) {
+            r.name = name.to_owned();
+            r.description = description;
+        } else {
+            return false;
+        }
+        true
+    }
+
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             id: new_id(),

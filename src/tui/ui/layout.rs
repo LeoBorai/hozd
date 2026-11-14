@@ -41,6 +41,16 @@ pub struct Areas {
     pub response_body: Rect,
     /// The Request / Metadata tab row over the center panel; empty outside the Projects tab.
     pub center_tabs: Rect,
+    /// The Metadata tab's title and description boxes (outer); empty on other tabs.
+    pub meta_title: Rect,
+    pub meta_desc: Rect,
+}
+
+/// The Metadata tab's boxes within the center panel's content area: title, description.
+pub fn metadata_areas(rest: Rect) -> (Rect, Rect) {
+    let [title, description] =
+        Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(rest);
+    (title, description)
 }
 
 pub(crate) const REQUEST_CENTER_TAB_WIDTH: u16 = " Request ".len() as u16;
@@ -230,6 +240,10 @@ pub fn areas_with(area: Rect, kind: Kind, center_tab: Option<CenterTab>) -> Area
         Some(_) => center_split(center),
         None => (Rect::ZERO, center),
     };
+    let (meta_title, meta_desc) = match center_tab {
+        Some(CenterTab::Metadata) => metadata_areas(center),
+        _ => (Rect::ZERO, Rect::ZERO),
+    };
     let mut center = center_areas(center, kind);
     if center_tab == Some(CenterTab::Metadata) {
         center = Center {
@@ -255,6 +269,8 @@ pub fn areas_with(area: Rect, kind: Kind, center_tab: Option<CenterTab>) -> Area
         response,
         response_body,
         center_tabs,
+        meta_title,
+        meta_desc,
     }
 }
 

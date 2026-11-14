@@ -70,6 +70,20 @@ pub struct ProjectRow {
     pub kind: ProjectRowKind,
     /// Index into [`App::projects`].
     pub project: usize,
+    /// The directory holding this line; `None` at the project root.
+    pub parent: Option<String>,
+}
+
+/// One line of the Projects list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PanelRow {
+    /// Outside a project: starts naming a new project.
+    CreateProject,
+    Node(ProjectRow),
+    /// Inside a project only.
+    CreateDirectory,
+    /// Inside a project only.
+    CreateRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +103,10 @@ pub enum ProjectRowKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     List,
+    /// Metadata tab: the title box.
+    MetaTitle,
+    /// Metadata tab: the description box.
+    MetaDescription,
     Url,
     Body,
     /// GraphQL editor: the variables JSON.
@@ -364,6 +382,18 @@ pub struct App {
     pub open_nodes: HashSet<String>,
     /// Selected row of [`App::project_rows`].
     pub projects_sel: usize,
+    /// Id of the project whose context is open in the Projects list.
+    pub project_ctx: Option<String>,
+    /// The name being typed for a new project, while the Projects list asks for one.
+    pub naming: Option<TextArea<'static>>,
+    /// Metadata tab editors, showing the tree line `meta_for`.
+    pub meta_title: TextArea<'static>,
+    pub meta_desc: TextArea<'static>,
+    meta_for: Option<String>,
+    /// The tree line last selected in the Projects list.
+    last_node: Option<String>,
+    /// Queue of projects to write to the database, in order.
+    saver: UnboundedSender<Project>,
     /// The selected tab over the center panel; only shown in the Projects tab.
     pub center_tab: CenterTab,
     pub history: Vec<Summary>,
@@ -498,6 +528,18 @@ impl App {
             })
             .collect();
 
+        let (saver, mut saved) = tokio::sync::mpsc::unbounded_channel::<Project>();
+        {
+            let (store, tx) = (store.clone(), tx.clone());
+            tokio::spawn(async move {
+                while let Some(project) = saved.recv().await {
+                    if let Err(e) = store.save_project(&project).await {
+                        let _ = tx.send(Msg::Failed(format!("could not save project: {e}")));
+                    }
+                }
+            });
+        }
+
         let app = Self {
             tab: Tab::Projects,
             focus: Focus::List,
@@ -506,6 +548,13 @@ impl App {
             projects: Vec::new(),
             open_nodes: HashSet::new(),
             projects_sel: 0,
+            project_ctx: None,
+            naming: None,
+            meta_title: single_line(""),
+            meta_desc: TextArea::default(),
+            meta_for: None,
+            last_node: None,
+            saver,
             center_tab: CenterTab::default(),
             history: Vec::new(),
             history_sel: 0,
@@ -945,6 +994,9 @@ impl App {
 
     /// Panels in display order; panel `n` of the UI is entry `n - 1`.
     pub fn panels(&self) -> Vec<Focus> {
+        if self.center_tab() == Some(CenterTab::Metadata) {
+            return vec![Focus::List, Focus::MetaTitle, Focus::MetaDescription];
+        }
         let mut panels = vec![Focus::List];
         if self.left_tab == LeftTab::Variables {
             panels.push(Focus::Captures);
@@ -973,14 +1025,22 @@ impl App {
         self.history.get(self.history_sel)
     }
 
-    /// The visible lines of the Projects tree: each project, and below an open one its
-    /// directories (nested) and requests.
+    /// Index into [`App::projects`] of the project whose context is open.
+    fn project_ctx_index(&self) -> Option<usize> {
+        let id = self.project_ctx.as_ref()?;
+        self.projects.iter().position(|p| &p.id == id)
+    }
+
+    /// The tree lines of the Projects tab. Outside a project's context: one closed line
+    /// per project. Inside one: that project (open), then its directories (nested) and
+    /// requests.
     pub fn project_rows(&self) -> Vec<ProjectRow> {
         fn request_rows(
             out: &mut Vec<ProjectRow>,
             requests: &[crate::model::Request],
             depth: usize,
             project: usize,
+            parent: Option<&str>,
         ) {
             for r in requests {
                 let method = r
@@ -995,6 +1055,7 @@ impl App {
                     description: r.description.clone(),
                     kind: ProjectRowKind::Request { method },
                     project,
+                    parent: parent.map(str::to_owned),
                 });
             }
         }
@@ -1004,6 +1065,7 @@ impl App {
             dirs: &[Directory],
             depth: usize,
             project: usize,
+            parent: Option<&str>,
         ) {
             for d in dirs {
                 let is_open = open.contains(&d.id);
@@ -1014,17 +1076,22 @@ impl App {
                     description: d.description.clone(),
                     kind: ProjectRowKind::Directory { open: is_open },
                     project,
+                    parent: parent.map(str::to_owned),
                 });
                 if is_open {
-                    dir_rows(out, open, &d.directories, depth + 1, project);
-                    request_rows(out, &d.requests, depth + 1, project);
+                    dir_rows(out, open, &d.directories, depth + 1, project, Some(&d.id));
+                    request_rows(out, &d.requests, depth + 1, project, Some(&d.id));
                 }
             }
         }
 
+        let ctx = self.project_ctx_index();
         let mut out = Vec::new();
         for (pi, p) in self.projects.iter().enumerate() {
-            let is_open = self.open_nodes.contains(&p.id);
+            if ctx.is_some_and(|c| c != pi) {
+                continue;
+            }
+            let is_open = ctx == Some(pi);
             out.push(ProjectRow {
                 depth: 0,
                 id: p.id.clone(),
@@ -1032,18 +1099,35 @@ impl App {
                 description: p.description.clone(),
                 kind: ProjectRowKind::Project { open: is_open },
                 project: pi,
+                parent: None,
             });
             if is_open {
-                dir_rows(&mut out, &self.open_nodes, &p.directories, 1, pi);
-                request_rows(&mut out, &p.requests, 1, pi);
+                dir_rows(&mut out, &self.open_nodes, &p.directories, 1, pi, None);
+                request_rows(&mut out, &p.requests, 1, pi, None);
             }
         }
         out
     }
 
+    /// Everything the Projects list shows. Outside a project: "Create project" and the
+    /// projects. Inside one: its tree, then the create-directory and create-request
+    /// rows; no other project can be created there.
+    pub fn panel_rows(&self) -> Vec<PanelRow> {
+        let nodes = self.project_rows().into_iter().map(PanelRow::Node);
+        if self.project_ctx_index().is_some() {
+            nodes
+                .chain([PanelRow::CreateDirectory, PanelRow::CreateRequest])
+                .collect()
+        } else {
+            std::iter::once(PanelRow::CreateProject)
+                .chain(nodes)
+                .collect()
+        }
+    }
+
     /// The client request of the selected Projects row, if it is a request.
     pub fn selected_project_request(&self) -> Option<Request> {
-        let row = self.project_rows().into_iter().nth(self.projects_sel)?;
+        let row = self.selected_project_row()?;
         if !matches!(row.kind, ProjectRowKind::Request { .. }) {
             return None;
         }
@@ -1060,21 +1144,209 @@ impl App {
         (self.tab == Tab::Projects).then_some(self.center_tab)
     }
 
-    /// The selected row of the Projects tree.
+    /// The selected tree line of the Projects list; `None` on a create row.
     pub fn selected_project_row(&self) -> Option<ProjectRow> {
-        self.project_rows().into_iter().nth(self.projects_sel)
+        match self.panel_rows().into_iter().nth(self.projects_sel)? {
+            PanelRow::Node(r) => Some(r),
+            _ => None,
+        }
     }
 
-    /// Opens or closes the project or directory at row `row`.
-    fn toggle_project_row(&mut self, row: usize) {
-        let Some(r) = self.project_rows().into_iter().nth(row) else {
+    /// Remembers the tree line under the selection: new directories and requests go
+    /// next to it, or inside it when it is a directory.
+    fn note_node(&mut self) {
+        if self.tab == Tab::Projects
+            && let Some(r) = self.selected_project_row()
+        {
+            self.last_node = Some(r.id);
+        }
+    }
+
+    /// What clicking or pressing Enter on `row` of the Projects list does: starts naming
+    /// a project, creates a directory or request, enters or leaves a project, or opens or
+    /// closes a directory.
+    fn open_panel_row(&mut self, row: usize) {
+        match self.panel_rows().into_iter().nth(row) {
+            Some(PanelRow::CreateProject) => self.naming = Some(single_line("")),
+            Some(PanelRow::CreateDirectory) => self.create_node(true),
+            Some(PanelRow::CreateRequest) => self.create_node(false),
+            Some(PanelRow::Node(r)) => match r.kind {
+                ProjectRowKind::Project { .. } => {
+                    self.last_node = None;
+                    if self.project_ctx.take().is_some() {
+                        // the list gains the "Create project" row above the projects
+                        self.projects_sel = r.project + 1;
+                    } else {
+                        self.project_ctx = Some(r.id);
+                        self.projects_sel = 0;
+                    }
+                }
+                ProjectRowKind::Directory { .. } => {
+                    if !self.open_nodes.remove(&r.id) {
+                        self.open_nodes.insert(r.id);
+                    }
+                }
+                ProjectRowKind::Request { .. } => {}
+            },
+            None => {}
+        }
+    }
+
+    /// Keys typed while a new project's name is being entered.
+    fn naming_key(&mut self, key: KeyEvent) {
+        let Some(name) = &mut self.naming else {
             return;
         };
-        if matches!(r.kind, ProjectRowKind::Request { .. }) {
+        match key.code {
+            KeyCode::Esc => self.naming = None,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.should_quit = true;
+            }
+            KeyCode::Enter => {
+                let text = name.lines().join(" ").trim().to_owned();
+                if !text.is_empty() {
+                    self.create_project(&text);
+                }
+            }
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down => {}
+            _ => crate::tui::headers::edit(name, key),
+        }
+    }
+
+    /// Stores a new empty project and enters its context.
+    fn create_project(&mut self, name: &str) {
+        let project = Project::new(name);
+        self.project_ctx = Some(project.id.clone());
+        self.projects.push(project);
+        self.persist_project(self.projects.len() - 1);
+        self.naming = None;
+        self.projects_sel = 0;
+        self.last_node = None;
+        self.last_click = None;
+        self.center_tab = CenterTab::Request;
+        self.notice = Some(format!("created project {name}"));
+    }
+
+    /// Where a new directory or request goes: inside the directory last selected, next
+    /// to the request last selected, else at the project root.
+    fn target_parent(&self) -> Option<String> {
+        let id = self.last_node.as_ref()?;
+        let row = self.project_rows().into_iter().find(|r| &r.id == id)?;
+        match row.kind {
+            ProjectRowKind::Directory { .. } => Some(row.id),
+            ProjectRowKind::Request { .. } => row.parent,
+            ProjectRowKind::Project { .. } => None,
+        }
+    }
+
+    /// Adds a directory or request to the open project and selects it.
+    fn create_node(&mut self, directory: bool) {
+        let Some(pi) = self.project_ctx_index() else {
+            self.notice = Some("open a project first".into());
+            return;
+        };
+        let parent = self.target_parent();
+        let id = if directory {
+            let dir = Directory::new("New directory");
+            let id = dir.id.clone();
+            self.projects[pi].add_directory(parent.as_deref(), dir);
+            id
+        } else {
+            let request = crate::model::Request::rest(
+                "New request",
+                crate::model::RestRequest::new(crate::model::Method::Get, ""),
+            );
+            let id = request.id.clone();
+            self.projects[pi].add_request(parent.as_deref(), request);
+            id
+        };
+        if let Some(parent) = parent {
+            self.open_nodes.insert(parent);
+        }
+        self.persist_project(pi);
+        if let Some(i) = self
+            .panel_rows()
+            .iter()
+            .position(|r| matches!(r, PanelRow::Node(n) if n.id == id))
+        {
+            self.projects_sel = i;
+        }
+        self.last_node = Some(id);
+        self.last_click = None;
+        self.scroll = 0;
+        self.focus = Focus::List;
+    }
+
+    /// Queues project `index` to be written to the database.
+    fn persist_project(&self, index: usize) {
+        if let Some(p) = self.projects.get(index) {
+            let _ = self.saver.send(p.clone());
+        }
+    }
+
+    /// Makes the Metadata editors show the selected tree line.
+    pub fn sync_meta(&mut self) {
+        let row = if self.tab == Tab::Projects {
+            self.selected_project_row()
+        } else {
+            None
+        };
+        let id = row.as_ref().map(|r| r.id.clone());
+        if id == self.meta_for {
             return;
         }
-        if !self.open_nodes.remove(&r.id) {
-            self.open_nodes.insert(r.id);
+        self.meta_for = id;
+        let (name, description) = row.map_or_else(Default::default, |r| {
+            (r.name, r.description.unwrap_or_default())
+        });
+        self.meta_title = single_line(&name);
+        let lines: Vec<String> = description.lines().map(str::to_owned).collect();
+        self.meta_desc = TextArea::new(if lines.is_empty() {
+            vec![String::new()]
+        } else {
+            lines
+        });
+        self.meta_desc.move_cursor(CursorMove::Bottom);
+        self.meta_desc.move_cursor(CursorMove::End);
+    }
+
+    /// Writes the Metadata editors into the project and queues it for saving, so the
+    /// tree shows the new title right away.
+    fn apply_meta(&mut self) {
+        let Some(id) = self.meta_for.clone() else {
+            return;
+        };
+        let name = self.meta_title.lines().join(" ");
+        let description = self.meta_desc.lines().join("\n");
+        let description = (!description.trim().is_empty()).then_some(description);
+        for pi in 0..self.projects.len() {
+            if self.projects[pi].set_meta(&id, &name, description.clone()) {
+                self.persist_project(pi);
+                break;
+            }
+        }
+    }
+
+    fn meta_key(&mut self, key: KeyEvent, title: bool) {
+        if title {
+            if key.code == KeyCode::Enter {
+                return self.set_focus(Focus::MetaDescription);
+            }
+            crate::tui::headers::edit(&mut self.meta_title, key);
+        } else {
+            crate::tui::headers::edit(&mut self.meta_desc, key);
+        }
+        self.apply_meta();
+    }
+
+    /// Selects a center tab, moving focus off boxes the tab does not show.
+    fn set_center_tab(&mut self, tab: CenterTab) {
+        self.center_tab = tab;
+        let meta = matches!(self.focus, Focus::MetaTitle | Focus::MetaDescription);
+        if (tab == CenterTab::Metadata && !meta && self.focus != Focus::List)
+            || (tab == CenterTab::Request && meta)
+        {
+            self.set_focus(Focus::List);
         }
     }
 
@@ -1196,7 +1468,8 @@ impl App {
                 self.projects = list;
                 self.projects_sel = self
                     .projects_sel
-                    .min(self.project_rows().len().saturating_sub(1));
+                    .min(self.panel_rows().len().saturating_sub(1));
+                self.sync_meta();
             }
             Msg::Preview(entry) => {
                 if self.selected_summary().is_some_and(|s| s.id == entry.id) {
@@ -1254,6 +1527,7 @@ impl App {
 
     pub fn handle_key(&mut self, key: KeyEvent) {
         self.key_inner(key);
+        self.sync_meta();
         // a query pasted or loaded into the address moves once the address loses focus
         if self.focus != Focus::Url {
             self.absorb_query();
@@ -1281,6 +1555,24 @@ impl App {
             return self.help_key(key.code, ctrl);
         }
 
+        if self.naming.is_some() && self.focus == Focus::List {
+            return self.naming_key(key);
+        }
+
+        // Ctrl+Shift+R / Ctrl+Shift+D add a request / directory to the open project.
+        if ctrl
+            && self.tab == Tab::Projects
+            && self.focus == Focus::List
+            && let KeyCode::Char(c) = key.code
+            && (key.modifiers.contains(KeyModifiers::SHIFT) || c.is_ascii_uppercase())
+        {
+            match c.to_ascii_lowercase() {
+                'r' => return self.create_node(false),
+                'd' => return self.create_node(true),
+                _ => {}
+            }
+        }
+
         // `?` types a character in text fields, so F1 opens the menu from anywhere.
         let typing = matches!(
             self.focus,
@@ -1292,6 +1584,8 @@ impl App {
                 | Focus::Auth
                 | Focus::Schema
                 | Focus::Captures
+                | Focus::MetaTitle
+                | Focus::MetaDescription
         );
         if key.code == KeyCode::F(1) || (key.code == KeyCode::Char('?') && !typing && !ctrl) {
             return self.help = Some(0);
@@ -1390,6 +1684,8 @@ impl App {
             Focus::Method => self.method_key(key.code),
             Focus::Response => self.response_key(key.code),
             Focus::Captures => self.captures_key(key),
+            Focus::MetaTitle => self.meta_key(key, true),
+            Focus::MetaDescription => self.meta_key(key, false),
         }
     }
 
@@ -1577,6 +1873,20 @@ impl App {
             Action::ToggleVars => self.toggle_vars(),
             Action::ToggleSchemaSource => self.toggle_schema_mode(),
             Action::ToggleTls => self.insecure = !self.insecure,
+            Action::NextPanel if self.center_tab() == Some(CenterTab::Metadata) => {
+                self.set_focus(match self.focus {
+                    Focus::List => Focus::MetaTitle,
+                    Focus::MetaTitle => Focus::MetaDescription,
+                    _ => Focus::List,
+                });
+            }
+            Action::PrevPanel if self.center_tab() == Some(CenterTab::Metadata) => {
+                self.set_focus(match self.focus {
+                    Focus::List => Focus::MetaDescription,
+                    Focus::MetaDescription => Focus::MetaTitle,
+                    _ => Focus::List,
+                });
+            }
             Action::NextPanel => {
                 self.set_focus(next_focus(
                     self.focus,
@@ -2153,19 +2463,26 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Enter => self.activate(),
             KeyCode::Char('m') if self.tab == Tab::Projects => {
-                self.center_tab = CenterTab::Metadata
+                self.set_center_tab(CenterTab::Metadata);
             }
-            KeyCode::Char('r') if self.tab == Tab::Projects => self.center_tab = CenterTab::Request,
+            KeyCode::Char('r') if self.tab == Tab::Projects => {
+                self.set_center_tab(CenterTab::Request);
+            }
             KeyCode::Right | KeyCode::Char('l') | KeyCode::Left | KeyCode::Char('h')
                 if self.tab == Tab::Projects =>
             {
                 let open = matches!(code, KeyCode::Right | KeyCode::Char('l'));
                 let row = self.projects_sel;
-                if let Some(r) = self.project_rows().into_iter().nth(row)
-                    && !matches!(r.kind, ProjectRowKind::Request { .. })
-                    && self.open_nodes.contains(&r.id) != open
-                {
-                    self.toggle_project_row(row);
+                if let Some(r) = self.selected_project_row() {
+                    let is_open = match r.kind {
+                        ProjectRowKind::Project { open } | ProjectRowKind::Directory { open } => {
+                            Some(open)
+                        }
+                        ProjectRowKind::Request { .. } => None,
+                    };
+                    if is_open.is_some_and(|o| o != open) {
+                        self.open_panel_row(row);
+                    }
                 }
             }
             _ => {}
@@ -2226,6 +2543,7 @@ impl App {
     pub fn handle_mouse(&mut self, event: MouseEvent, screen: Rect) {
         self.absorb_query();
         self.handle_mouse_event(event, screen);
+        self.sync_meta();
         self.refresh_suggestions();
     }
 
@@ -2384,7 +2702,25 @@ impl App {
         }
         if areas.center_tabs.contains(at) {
             if let Some(tab) = ui::center_tab_at(areas.center_tabs, at.x) {
-                self.center_tab = tab;
+                self.set_center_tab(tab);
+            }
+        } else if areas.meta_title.contains(at) {
+            self.set_focus(Focus::MetaTitle);
+            let inner = ui::inner(areas.meta_title);
+            if inner.contains(at) {
+                let (_, col_scroll) = ui::editor_scroll(cursor_of(&self.meta_title), inner);
+                self.meta_title
+                    .move_cursor(CursorMove::Jump(0, (at.x - inner.x) + col_scroll as u16));
+            }
+        } else if areas.meta_desc.contains(at) {
+            self.set_focus(Focus::MetaDescription);
+            let inner = ui::inner(areas.meta_desc);
+            if inner.contains(at) {
+                let (row_scroll, col_scroll) = ui::editor_scroll(cursor_of(&self.meta_desc), inner);
+                self.meta_desc.move_cursor(CursorMove::Jump(
+                    (at.y - inner.y) + row_scroll as u16,
+                    (at.x - inner.x) + col_scroll as u16,
+                ));
             }
         } else if areas.tabs.contains(at) {
             if let Some(tab) = ui::tab_at(areas.tabs, at.x) {
@@ -2568,7 +2904,7 @@ impl App {
     fn click_list(&mut self, y_in_list: u16, height: u16) {
         let item = match self.tab {
             Tab::Projects => {
-                let rows = self.project_rows().len();
+                let rows = self.panel_rows().len();
                 let selected_row = (rows > 0).then_some(self.projects_sel);
                 let row = y_in_list as usize + ui::list_offset(selected_row, height);
                 (row < rows).then_some(row)
@@ -2592,13 +2928,16 @@ impl App {
         self.focus = Focus::List;
         if self.tab == Tab::Projects {
             let is_request = matches!(
-                self.project_rows().get(item).map(|r| &r.kind),
-                Some(ProjectRowKind::Request { .. })
+                self.panel_rows().get(item),
+                Some(PanelRow::Node(ProjectRow {
+                    kind: ProjectRowKind::Request { .. },
+                    ..
+                }))
             );
             if !is_request {
-                // A click on a project or directory opens or closes it.
+                // One click opens or closes a project or directory, or runs a create row.
                 self.select(item);
-                self.toggle_project_row(item);
+                self.open_panel_row(item);
                 self.last_click = None;
                 return;
             }
@@ -2620,6 +2959,7 @@ impl App {
             Tab::History => self.history_sel = item,
         }
         self.scroll = 0;
+        self.note_node();
         self.request_preview();
     }
 
@@ -2676,6 +3016,8 @@ impl App {
 
     pub fn set_tab(&mut self, tab: Tab) {
         self.tab = tab;
+        self.naming = None;
+        self.sync_meta();
         self.last_click = None;
         self.scroll = 0;
         self.request_preview();
@@ -2705,7 +3047,7 @@ impl App {
     }
 
     fn move_selection(&mut self, delta: isize) {
-        let project_len = self.project_rows().len();
+        let project_len = self.panel_rows().len();
         let (sel, len) = match self.tab {
             Tab::Projects => (&mut self.projects_sel, project_len),
             Tab::Stored => (&mut self.stored_sel, self.templates.len()),
@@ -2717,6 +3059,7 @@ impl App {
         *sel = sel.saturating_add_signed(delta).min(len - 1);
         self.last_click = None;
         self.scroll = 0;
+        self.note_node();
         self.request_preview();
     }
 
@@ -2726,11 +3069,10 @@ impl App {
             Tab::Projects => {
                 let row = self.projects_sel;
                 if self
-                    .project_rows()
-                    .get(row)
-                    .is_some_and(|r| !matches!(r.kind, ProjectRowKind::Request { .. }))
+                    .selected_project_row()
+                    .is_none_or(|r| !matches!(r.kind, ProjectRowKind::Request { .. }))
                 {
-                    self.toggle_project_row(row);
+                    self.open_panel_row(row);
                     return;
                 }
                 self.selected_project_request()
@@ -3235,6 +3577,7 @@ impl App {
 /// The focus ring: list, URL, [schema, method (gRPC only)], the request editor, response.
 fn next_focus(f: Focus, editor: Focus, kind: Kind, captures: bool) -> Focus {
     match (f, kind) {
+        (Focus::MetaTitle | Focus::MetaDescription, _) => Focus::List,
         (Focus::List, _) if captures => Focus::Captures,
         (Focus::List | Focus::Captures, _) => Focus::Url,
         (Focus::Url, Kind::Http | Kind::Ws) => editor,
@@ -3251,6 +3594,7 @@ fn next_focus(f: Focus, editor: Focus, kind: Kind, captures: bool) -> Focus {
 
 fn prev_focus(f: Focus, editor: Focus, kind: Kind, captures: bool) -> Focus {
     match (f, kind) {
+        (Focus::MetaTitle | Focus::MetaDescription, _) => Focus::List,
         (Focus::List, _) => Focus::Response,
         (Focus::Captures, _) => Focus::List,
         (Focus::Url, _) if captures => Focus::Captures,

@@ -4,10 +4,12 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Tabs, Wrap};
+use ratatui::text::Line;
+use ratatui::widgets::{Paragraph, Tabs};
 
-use crate::tui::app::{App, CenterTab, ProjectRowKind};
+use crate::tui::app::{App, CenterTab, Focus, ProjectRowKind};
+
+use super::super::layout::metadata_areas;
 
 use super::*;
 
@@ -31,39 +33,51 @@ pub(crate) fn draw_center_tabs(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 pub(crate) fn draw_metadata(frame: &mut Frame, app: &App, area: Rect) {
-    let outer = block("Metadata", false);
-    let inner = outer.inner(area);
-    frame.render_widget(outer, area);
+    let Some(row) = app.selected_project_row() else {
+        let outer = block("Metadata", false);
+        let inner = outer.inner(area);
+        frame.render_widget(outer, area);
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "select a project, directory or request",
+                Style::new().fg(Color::DarkGray),
+            )),
+            inner,
+        );
+        return;
+    };
+    let what = match row.kind {
+        ProjectRowKind::Project { .. } => "Project",
+        ProjectRowKind::Directory { .. } => "Directory",
+        ProjectRowKind::Request { .. } => "Request",
+    };
+    let (title, description) = metadata_areas(area);
 
-    let label = |text: &str| {
-        Line::from(Span::styled(
-            text.to_owned(),
-            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        ))
-    };
-    let lines = match app.selected_project_row() {
-        None => vec![Line::styled(
-            "select a project, directory or request",
-            Style::new().fg(Color::DarkGray),
-        )],
-        Some(row) => {
-            let what = match row.kind {
-                ProjectRowKind::Project { .. } => "Project",
-                ProjectRowKind::Directory { .. } => "Directory",
-                ProjectRowKind::Request { .. } => "Request",
-            };
-            let description = match row.description.as_deref().filter(|d| !d.is_empty()) {
-                Some(d) => Line::raw(d.to_owned()),
-                None => Line::styled("none", Style::new().fg(Color::DarkGray)),
-            };
-            vec![
-                label(&format!("Title ({what})")),
-                Line::raw(row.name),
-                Line::raw(""),
-                label("Description"),
-                description,
-            ]
-        }
-    };
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    let title_block = block(
+        &numbered(app, Focus::MetaTitle, &format!("Title ({what})")),
+        app.focus == Focus::MetaTitle,
+    );
+    let inner = title_block.inner(title);
+    frame.render_widget(title_block, title);
+    render_editor(
+        frame,
+        &app.meta_title,
+        inner,
+        app.focus == Focus::MetaTitle,
+        Syntax::Plain,
+    );
+
+    let desc_block = block(
+        &numbered(app, Focus::MetaDescription, "Description"),
+        app.focus == Focus::MetaDescription,
+    );
+    let inner = desc_block.inner(description);
+    frame.render_widget(desc_block, description);
+    render_editor(
+        frame,
+        &app.meta_desc,
+        inner,
+        app.focus == Focus::MetaDescription,
+        Syntax::Plain,
+    );
 }

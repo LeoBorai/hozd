@@ -260,7 +260,7 @@ async fn left_panel_shows_projects_and_history_tabs_with_empty_hints() {
     h.app.set_tab(Tab::Projects);
     let out = text(&render(&h.app, 120, 30));
     assert!(out.contains("Projects") && out.contains("History") && !out.contains("Stored"));
-    assert!(out.contains("no projects"));
+    assert!(out.contains("Create project"), "{out}");
     h.app.set_tab(Tab::History);
     let out = text(&render(&h.app, 120, 30));
     assert!(out.contains("no requests sent yet"));
@@ -3496,46 +3496,154 @@ async fn the_http_preview_shows_variable_values() {
     assert!(!out.contains("/a?q=abc"), "{out}");
 }
 
+fn ctrl_shift(c: char) -> KeyEvent {
+    KeyEvent::new(
+        KeyCode::Char(c),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )
+}
+
+/// Types a project name into the "Create project" row and presses Enter.
+fn create_project(app: &mut App, name: &str) {
+    app.handle_key(key(KeyCode::Enter)); // the first row is "Create project"
+    type_text(app, name);
+    app.handle_key(key(KeyCode::Enter));
+}
+
 #[tokio::test]
-async fn projects_tab_shows_a_collapsible_tree_and_loads_requests() {
-    use hozd::model::{Directory, Project, Request as PRequest, RestRequest, Server};
+async fn creating_a_project_asks_for_a_name_then_enters_its_context() {
+    let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
+
+    h.app.handle_key(key(KeyCode::Enter));
+    type_text(&mut h.app, "Pets");
+    let out = text(&render(&h.app, 120, 30));
+    assert!(out.contains("+ Pets \u{23ce}"), "{out}");
+
+    h.app.handle_key(key(KeyCode::Enter));
+    assert!(h.app.naming.is_none());
+    assert_eq!(h.app.projects.len(), 1);
+    let out = text(&render(&h.app, 120, 30));
+    assert!(out.contains("\u{25bc}") && out.contains("Pets"), "{out}");
+    assert!(
+        out.contains("Create directory") && out.contains("Create request"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("Create project"),
+        "no projects inside a project: {out}"
+    );
+
+    // stored in the database
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(h.store.list_projects().await.unwrap().len(), 1);
+
+    // leaving the project closes it
+    h.app.handle_key(key(KeyCode::Left));
+    let out = text(&render(&h.app, 120, 30));
+    assert!(
+        out.contains("\u{25b6}") && out.contains("Create project"),
+        "{out}"
+    );
+}
+
+#[tokio::test]
+async fn an_empty_name_is_not_accepted_and_escape_cancels() {
+    let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
+    h.app.handle_key(key(KeyCode::Enter));
+    h.app.handle_key(key(KeyCode::Enter));
+    assert!(h.app.naming.is_some() && h.app.projects.is_empty());
+    h.app.handle_key(key(KeyCode::Esc));
+    assert!(h.app.naming.is_none());
+}
+
+#[tokio::test]
+async fn shortcuts_create_and_focus_directories_and_requests() {
+    let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
+    h.app.handle_key(ctrl_shift('d'));
+    assert!(h.app.projects.is_empty(), "needs an open project");
+
+    create_project(&mut h.app, "Pets");
+    h.app.handle_key(ctrl_shift('D'));
+    let sel = h.app.selected_project_row().unwrap();
+    assert_eq!(sel.name, "New directory", "the new directory is selected");
+
+    // a request made while the directory is selected goes inside it
+    h.app.handle_key(ctrl_shift('r'));
+    let sel = h.app.selected_project_row().unwrap();
+    assert_eq!(sel.name, "New request");
+    assert_eq!(sel.depth, 2);
+    assert_eq!(h.app.projects[0].directories[0].requests.len(), 1);
+
+    // from the project line, requests land at the root
+    h.app.handle_key(key(KeyCode::Up));
+    h.app.handle_key(key(KeyCode::Up));
+    h.app.handle_key(ctrl_shift('r'));
+    assert_eq!(h.app.projects[0].requests.len(), 1);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let saved = h.store.list_projects().await.unwrap();
+    assert_eq!(saved, h.app.projects);
+}
+
+#[tokio::test]
+async fn create_rows_are_clickable() {
+    let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
+    let a = ui::areas_with(SCREEN, Kind::Http, Some(hozd::tui::CenterTab::Request));
+    click(&mut h.app, a.list.x + 3, a.list.y); // "Create project"
+    assert!(h.app.naming.is_some());
+    type_text(&mut h.app, "P");
+    h.app.handle_key(key(KeyCode::Enter));
+    // rows: project, create directory, create request
+    click(&mut h.app, a.list.x + 3, a.list.y + 2);
+    assert_eq!(h.app.selected_project_row().unwrap().name, "New request");
+}
+
+#[tokio::test]
+async fn editing_the_metadata_title_renames_the_item_in_the_tree() {
+    use hozd::tui::CenterTab;
 
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
-    let mut project = Project::new("Pets");
-    project.servers.push(Server {
-        url: "http://pets.test".into(),
-        ..Server::default()
-    });
-    let mut dir = Directory::new("pets");
-    dir.requests.push(PRequest::rest(
-        "list pets",
-        RestRequest::new(hozd::model::Method::Get, "/pets"),
-    ));
-    project.directories.push(dir);
-    h.store.save_project(&project).await.unwrap();
-    h.app.refresh_projects();
-    pump(&mut h, |a| !a.projects.is_empty()).await;
+    create_project(&mut h.app, "Pets");
+    h.app.handle_key(ctrl_shift('r'));
+    h.app.handle_key(key(KeyCode::Char('m')));
+    assert_eq!(h.app.center_tab, CenterTab::Metadata);
 
-    assert_eq!(h.app.tab, Tab::Projects);
-    assert_eq!(h.app.project_rows().len(), 1, "projects start closed");
+    h.app.handle_key(key(KeyCode::Tab)); // title box
+    assert_eq!(h.app.focus, Focus::MetaTitle);
+    for _ in 0.."New request".len() {
+        h.app.handle_key(key(KeyCode::Backspace));
+    }
+    type_text(&mut h.app, "List pets");
+    h.app.handle_key(key(KeyCode::Tab)); // description
+    type_text(&mut h.app, "all of them");
 
-    h.app.handle_key(key(KeyCode::Enter)); // open project
-    h.app.handle_key(key(KeyCode::Down));
-    h.app.handle_key(key(KeyCode::Enter)); // open directory
-    assert_eq!(h.app.project_rows().len(), 3);
     let out = text(&render(&h.app, 120, 30));
-    assert!(out.contains("Pets") && out.contains("list pets"), "{out}");
+    assert!(out.contains("List pets"), "{out}");
+    assert_eq!(h.app.projects[0].requests[0].name, "List pets");
+    assert_eq!(
+        h.app.projects[0].requests[0].description.as_deref(),
+        Some("all of them")
+    );
 
-    h.app.handle_key(key(KeyCode::Down));
-    h.app.handle_key(key(KeyCode::Enter)); // load request
-    assert_eq!(h.app.focus, Focus::Url);
-    assert_eq!(h.app.editor_request().url, "http://pets.test/pets");
+    h.app.handle_key(key(KeyCode::Esc)); // back to the list
+    assert_eq!(h.app.selected_project_row().unwrap().name, "List pets");
+    let want = h.app.projects.clone();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while h.store.list_projects().await.unwrap() != want {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("every edit reaches the database");
 }
 
 #[tokio::test]
 async fn projects_tab_adds_request_and_metadata_tabs_over_the_center() {
-    use hozd::model::{Project, Request as PRequest, RestRequest};
     use hozd::tui::CenterTab;
 
     let mut h = harness().await;
@@ -3543,28 +3651,15 @@ async fn projects_tab_adds_request_and_metadata_tabs_over_the_center() {
     let out = text(&render(&h.app, 120, 30));
     assert!(out.contains("Request") && out.contains("Metadata"), "{out}");
 
-    let mut project = Project::new("Pets");
-    project.description = Some("All about pets".into());
-    let mut req = PRequest::rest("list", RestRequest::new(hozd::model::Method::Get, "/pets"));
-    req.description = Some("Lists the pets".into());
-    project.requests.push(req);
-    h.store.save_project(&project).await.unwrap();
-    h.app.refresh_projects();
-    pump(&mut h, |a| !a.projects.is_empty()).await;
-
+    create_project(&mut h.app, "Pets");
     let a = ui::areas_with(SCREEN, Kind::Http, Some(CenterTab::Request));
     click(&mut h.app, a.center_tabs.x + 12, a.center_tabs.y); // inside " Metadata "
     assert_eq!(h.app.center_tab, CenterTab::Metadata);
     let out = text(&render(&h.app, 120, 30));
     assert!(
-        out.contains("Title (Project)") && out.contains("All about pets"),
+        out.contains("Title (Project)") && out.contains("Pets"),
         "{out}"
     );
-
-    h.app.handle_key(key(KeyCode::Enter)); // open project
-    h.app.handle_key(key(KeyCode::Down)); // the request
-    let out = text(&render(&h.app, 120, 30));
-    assert!(out.contains("Lists the pets"), "{out}");
 
     h.app.handle_key(key(KeyCode::Char('r')));
     assert_eq!(h.app.center_tab, CenterTab::Request);

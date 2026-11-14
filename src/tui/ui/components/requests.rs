@@ -9,7 +9,7 @@ use ratatui::widgets::{List, ListItem, ListState, Tabs};
 use crate::client::{Kind, Method, status_name};
 use crate::project::TemplateKind;
 
-use crate::tui::app::{App, Focus, ProjectRowKind, Tab};
+use crate::tui::app::{App, Focus, PanelRow, ProjectRowKind, Tab};
 
 use super::super::layout::*;
 use super::*;
@@ -51,9 +51,15 @@ pub(crate) fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
     let mut state = ListState::default()
         .with_selected(selected_row)
         .with_offset(list_offset(selected_row, list.height));
+    // Projects rows carry dark-gray key hints, which a gray highlight would hide.
+    let selection_bg = if app.tab == Tab::Projects {
+        Color::Blue
+    } else {
+        Color::DarkGray
+    };
     let highlight = if focused {
         Style::new()
-            .bg(Color::DarkGray)
+            .bg(selection_bg)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::new().add_modifier(Modifier::BOLD)
@@ -63,17 +69,55 @@ pub(crate) fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
         list,
         &mut state,
     );
+    if let (Tab::Projects, Some(name)) = (app.tab, &app.naming)
+        && focused
+        && selected_row.is_some_and(|r| r == 0)
+    {
+        // the name is typed on the first row, after the two-column "+ " marker
+        let col = name.cursor().1 as u16;
+        let x = (list.x + 2 + col).min(list.right().saturating_sub(1));
+        frame.set_cursor_position(ratatui::layout::Position::new(x, list.y));
+    }
 }
 
 pub(crate) fn project_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) {
-    if app.projects.is_empty() {
-        return (vec![dim("no projects; run `hozd import <file>`")], None);
-    }
+    let green = Style::new().fg(Color::Green);
+    let gray = Style::new().fg(Color::DarkGray);
     let rows = app
-        .project_rows()
+        .panel_rows()
         .into_iter()
-        .map(|r| {
+        .map(|row| {
+            let r = match row {
+                PanelRow::CreateProject => {
+                    return ListItem::new(match &app.naming {
+                        Some(name) => Line::from(vec![
+                            Span::styled("+ ", green),
+                            Span::raw(name.lines().join(" ")),
+                            Span::styled(" \u{23ce}", gray),
+                        ]),
+                        None => Line::styled("+ Create project", green),
+                    });
+                }
+                PanelRow::CreateDirectory => {
+                    return ListItem::new(Line::from(vec![
+                        Span::styled("+ Create directory", green),
+                        Span::styled("  Ctrl+Shift+D", gray),
+                    ]));
+                }
+                PanelRow::CreateRequest => {
+                    return ListItem::new(Line::from(vec![
+                        Span::styled("+ Create request", green),
+                        Span::styled("  Ctrl+Shift+R", gray),
+                    ]));
+                }
+                PanelRow::Node(r) => r,
+            };
             let indent = Span::raw("  ".repeat(r.depth));
+            let name = if r.name.is_empty() {
+                "(untitled)".to_owned()
+            } else {
+                r.name.clone()
+            };
             let folder = |open: bool, bold: bool| {
                 let style = Style::new().fg(Color::Cyan);
                 let style = if bold {
@@ -83,8 +127,8 @@ pub(crate) fn project_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>)
                 };
                 vec![
                     indent.clone(),
-                    Span::raw(if open { "\u{25be} " } else { "\u{25b8} " }),
-                    Span::styled(format!("\u{1F4C1} {}", r.name), style),
+                    Span::raw(if open { "\u{25bc} " } else { "\u{25b6} " }),
+                    Span::styled(format!("\u{1F4C1} {name}"), style),
                 ]
             };
             ListItem::new(Line::from(match &r.kind {
@@ -95,7 +139,7 @@ pub(crate) fn project_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>)
                         Ok(m) => method_span(m),
                         Err(_) => Span::raw(format!("{method:<6}")),
                     };
-                    vec![indent, m, Span::raw(format!(" {}", r.name))]
+                    vec![indent, m, Span::raw(format!(" {name}"))]
                 }
             }))
         })
