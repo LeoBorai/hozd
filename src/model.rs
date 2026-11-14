@@ -47,14 +47,17 @@
 //! unknown case.
 
 mod common;
+mod postman;
 mod project;
 mod rest;
+mod util;
 
 pub use common::{
     ApiKeyLocation, Auth, ConvertError, DERIVED_PREFIX, Exported, Extensions, Id, NameValue,
     Script, ScriptKind, SecurityScheme, Server, Source, SourceFormat, Variable, derive_id,
     is_derived, new_id,
 };
+pub use postman::{export_postman, import_postman};
 pub use project::{ApiKind, ApiRequest, Directory, Project, Request};
 pub use rest::{
     BodyContent, FieldKind, FormField, Method, OperationMeta, ParamLocation, RestBody, RestParam,

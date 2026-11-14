@@ -1,0 +1,139 @@
+{
+  "info": {
+    "_postman_id": "11111111-2222-4333-8444-555555555555",
+    "name": "Pet Store",
+    "description": "Sample collection",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "id": "folder-users",
+      "name": "Users",
+      "description": "User endpoints",
+      "item": [
+        {
+          "id": "folder-admin",
+          "name": "Admin",
+          "auth": { "type": "noauth" },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["console.log('admin');", "pm.variables.set('a', 1);"] } }
+          ],
+          "variable": [ { "key": "role", "value": "admin" } ],
+          "item": [
+            {
+              "id": "req-delete",
+              "name": "Delete user",
+              "request": {
+                "method": "DELETE",
+                "header": [ { "key": "X-Reason", "value": "cleanup", "disabled": true } ],
+                "url": {
+                  "raw": "{{baseUrl}}/users/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["users", ":id"],
+                  "variable": [ { "key": "id", "value": "42", "description": "User id" } ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "req-get",
+          "name": "Get user",
+          "request": {
+            "method": "GET",
+            "description": "Fetch one",
+            "header": [ { "key": "Accept", "value": "application/json", "type": "text" } ],
+            "url": {
+              "raw": "{{baseUrl}}/users/:id?verbose=true",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", ":id"],
+              "query": [ { "key": "verbose", "value": "true", "description": "More data" }, { "key": "skip", "value": "1", "disabled": true } ],
+              "variable": [ { "key": "id", "value": "1" } ]
+            }
+          },
+          "response": [
+            {
+              "id": "resp-1",
+              "name": "OK",
+              "originalRequest": { "method": "GET", "url": "{{baseUrl}}/users/1" },
+              "status": "OK",
+              "code": 200,
+              "header": [ { "key": "Content-Type", "value": "application/json" } ],
+              "cookie": [],
+              "body": "{\"id\":1}",
+              "_postman_previewlanguage": "json"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "req-raw",
+      "name": "Create user",
+      "event": [
+        { "listen": "test", "script": { "id": "s1", "type": "text/javascript", "exec": ["pm.test('ok', () => {});"] } }
+      ],
+      "protocolProfileBehavior": { "followRedirects": false, "disableBodyPruning": true },
+      "request": {
+        "method": "POST",
+        "auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{token}}", "type": "string" } ] },
+        "body": { "mode": "raw", "raw": "{\"name\":\"x\"}", "options": { "raw": { "language": "json" } } },
+        "url": { "raw": "{{baseUrl}}/users", "host": ["{{baseUrl}}"], "path": ["users"] },
+        "proxy": { "match": "http://*", "host": "proxy.local" }
+      },
+      "x-owner": "team-a"
+    },
+    {
+      "id": "req-urlencoded",
+      "name": "Login",
+      "request": {
+        "method": "POST",
+        "body": { "mode": "urlencoded", "urlencoded": [ { "key": "user", "value": "me", "description": "name" }, { "key": "pw", "value": "secret", "disabled": true } ] },
+        "url": { "raw": "https://api.example.com:8443/login", "protocol": "https", "host": ["api", "example", "com"], "port": "8443", "path": ["login"], "hash": "top" }
+      }
+    },
+    {
+      "id": "req-form",
+      "name": "Upload",
+      "request": {
+        "method": "PUT",
+        "auth": { "type": "apikey", "apikey": [ { "key": "key", "value": "X-Api-Key", "type": "string" }, { "key": "value", "value": "k", "type": "string" }, { "key": "in", "value": "header", "type": "string" } ] },
+        "body": { "mode": "formdata", "formdata": [ { "key": "title", "value": "t", "type": "text", "contentType": "text/plain" }, { "key": "file", "src": "/tmp/a.png", "type": "file" } ] },
+        "url": { "raw": "{{baseUrl}}/upload", "host": ["{{baseUrl}}"], "path": ["upload"] }
+      }
+    },
+    {
+      "id": "req-file",
+      "name": "Binary",
+      "request": {
+        "method": "PATCH",
+        "auth": { "type": "basic", "basic": [ { "key": "username", "value": "u", "type": "string" }, { "key": "password", "value": "p", "type": "string" } ] },
+        "body": { "mode": "file", "file": { "src": "/tmp/data.bin" } },
+        "url": { "raw": "{{baseUrl}}/bin", "host": ["{{baseUrl}}"], "path": ["bin"] }
+      }
+    },
+    {
+      "id": "req-graphql",
+      "name": "GraphQL body",
+      "request": {
+        "method": "POST",
+        "body": { "mode": "graphql", "graphql": { "query": "{ me { id } }", "variables": "{}" } },
+        "url": { "raw": "{{baseUrl}}/graphql", "host": ["{{baseUrl}}"], "path": ["graphql"] }
+      }
+    },
+    {
+      "id": "req-custom",
+      "name": "Lock",
+      "request": { "method": "LOCK", "url": { "raw": "{{baseUrl}}/doc", "host": ["{{baseUrl}}"], "path": ["doc"] } }
+    }
+  ],
+  "auth": { "type": "oauth2", "oauth2": [ { "key": "accessToken", "value": "tok", "type": "string" } ] },
+  "event": [
+    { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["// collection"] } }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "https://api.example.com", "type": "string" },
+    { "key": "token", "value": "abc", "description": "api token" }
+  ],
+  "x-unknown-root": { "a": 1 }
+}
