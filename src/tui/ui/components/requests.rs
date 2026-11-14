@@ -9,7 +9,8 @@ use ratatui::widgets::{List, ListItem, ListState, Tabs};
 use crate::client::{Kind, Method, status_name};
 use crate::project::TemplateKind;
 
-use crate::tui::app::{App, Focus, PanelRow, ProjectRowKind, Tab};
+use crate::history::Summary;
+use crate::tui::app::{App, Focus, HistoryRow, PanelRow, ProjectRowKind, Tab};
 
 use super::super::layout::*;
 use super::*;
@@ -193,9 +194,9 @@ pub(crate) fn stored_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) 
             match &t.template.kind {
                 TemplateKind::Http(h) => method_span(h.method),
                 TemplateKind::Grpc(_) => Span::styled("gRPC  ", Style::new().fg(Color::Magenta)),
-                TemplateKind::Ws(_) => Span::styled("WS    ", Style::new().fg(Color::Green)),
+                TemplateKind::Ws(_) => Span::styled("WS   ", Style::new().fg(Color::Green)),
                 TemplateKind::Graphql(_) => {
-                    Span::styled("GQL   ", Style::new().fg(Color::LightMagenta))
+                    Span::styled("GQL  ", Style::new().fg(Color::LightMagenta))
                 }
             },
             Span::raw(format!(" {}", t.template.name)),
@@ -208,68 +209,75 @@ pub(crate) fn history_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>)
     if app.history.is_empty() {
         return (vec![dim("no requests sent yet")], None);
     }
+    let selected = app.history_sel;
     let rows = app
-        .history
-        .iter()
-        .map(|s| match s.kind {
-            Kind::Http => {
-                let status = match s.status {
-                    Some(code) => Span::styled(code.to_string(), status_style(code)),
-                    None => Span::styled("ERR", Style::new().fg(Color::Red)),
-                };
-                let method = match s.method.parse::<Method>() {
-                    Ok(method) => method_span(method),
-                    Err(_) => Span::raw(format!("{:<6}", s.method)),
-                };
-                ListItem::new(Line::from(vec![
-                    status,
-                    Span::raw(" "),
-                    method,
-                    Span::raw(format!(" {}", s.url)),
-                ]))
-            }
-            Kind::Graphql => {
-                let status = match s.status {
-                    Some(code) => Span::styled(code.to_string(), status_style(code)),
-                    None => Span::styled("ERR", Style::new().fg(Color::Red)),
-                };
-                ListItem::new(Line::from(vec![
-                    status,
-                    Span::raw(" "),
-                    Span::styled("GQL  ", Style::new().fg(Color::LightMagenta)),
-                    Span::raw(s.url.clone()),
-                ]))
-            }
-            Kind::Ws => {
-                let status = match s.status {
-                    Some(code) => Span::styled(code.to_string(), status_style(code)),
-                    None => Span::styled("ERR", Style::new().fg(Color::Red)),
-                };
-                ListItem::new(Line::from(vec![
-                    status,
-                    Span::raw(" "),
-                    Span::styled("WS   ", Style::new().fg(Color::Green)),
-                    Span::raw(s.url.clone()),
-                ]))
-            }
-            Kind::Grpc => {
-                let status = match s.status {
-                    Some(0) => Span::styled("OK", Style::new().fg(Color::Green)),
-                    Some(code) => {
-                        Span::styled(status_name(i32::from(code)), Style::new().fg(Color::Red))
-                    }
-                    None => Span::styled("ERR", Style::new().fg(Color::Red)),
-                };
-                ListItem::new(Line::from(vec![
-                    status,
-                    Span::raw(" "),
-                    Span::styled("gRPC ", Style::new().fg(Color::Magenta)),
-                    Span::raw(short_method(&s.method).to_owned()),
-                ]))
-            }
+        .history_rows()
+        .into_iter()
+        .map(|row| {
+            let line = match row {
+                HistoryRow::Host { host, open } => Line::from(vec![
+                    Span::raw(if open { "\u{25bc} " } else { "\u{25b6} " }),
+                    Span::styled(
+                        host,
+                        Style::new()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                    ),
+                ]),
+                HistoryRow::Entry(i) => entry_line(&app.history[i]),
+            };
+            ListItem::new(line)
         })
         .collect();
-    (rows, Some(app.history_sel))
+    (rows, Some(selected))
+}
+
+/// One request under its host: status, method, and the URI instead of the full URL.
+fn entry_line(s: &Summary) -> Line<'static> {
+    let status = |code: Option<u16>| match code {
+        Some(code) => Span::styled(code.to_string(), status_style(code)),
+        None => Span::styled("ERR", Style::new().fg(Color::Red)),
+    };
+    let (status, tag, target) = match s.kind {
+        Kind::Http => {
+            let method = match s.method.parse::<Method>() {
+                Ok(method) => method_span(method),
+                Err(_) => Span::raw(format!("{:<6}", s.method)),
+            };
+            (status(s.status), method, format!(" {}", s.uri()))
+        }
+        Kind::Graphql => (
+            status(s.status),
+            Span::styled("GQL  ", Style::new().fg(Color::LightMagenta)),
+            s.uri().to_owned(),
+        ),
+        Kind::Ws => (
+            status(s.status),
+            Span::styled("WS   ", Style::new().fg(Color::Green)),
+            s.uri().to_owned(),
+        ),
+        Kind::Grpc => {
+            let status = match s.status {
+                Some(0) => Span::styled("OK", Style::new().fg(Color::Green)),
+                Some(code) => {
+                    Span::styled(status_name(i32::from(code)), Style::new().fg(Color::Red))
+                }
+                None => Span::styled("ERR", Style::new().fg(Color::Red)),
+            };
+            (
+                status,
+                Span::styled("gRPC ", Style::new().fg(Color::Magenta)),
+                short_method(&s.method).to_owned(),
+            )
+        }
+    };
+    Line::from(vec![
+        Span::raw("  "),
+        status,
+        Span::raw(" "),
+        tag,
+        Span::raw(target),
+    ])
 }
 
 /// `user.v1.UserService/GetUser` -> `UserService/GetUser`.

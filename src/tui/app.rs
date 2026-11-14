@@ -84,6 +84,15 @@ pub struct ProjectRow {
     pub parent: Option<String>,
 }
 
+/// A line of the History list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HistoryRow {
+    /// A host group's header line.
+    Host { host: String, open: bool },
+    /// A request, as an index into [`App::history`].
+    Entry(usize),
+}
+
 /// One line of the Projects list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PanelRow {
@@ -417,6 +426,8 @@ pub struct App {
     pub center_tab: CenterTab,
     pub history: Vec<Summary>,
     pub history_sel: usize,
+    /// Hosts whose History group is collapsed.
+    pub history_closed: HashSet<String>,
     /// Whether the editor builds an HTTP or a gRPC request.
     pub kind: Kind,
     pub method: Method,
@@ -581,6 +592,7 @@ impl App {
             center_tab: CenterTab::default(),
             history: Vec::new(),
             history_sel: 0,
+            history_closed: HashSet::new(),
             kind: Kind::Http,
             method: Method::Get,
             url: single_line(""),
@@ -1045,7 +1057,45 @@ impl App {
     }
 
     pub fn selected_summary(&self) -> Option<&Summary> {
-        self.history.get(self.history_sel)
+        match self.history_rows().get(self.history_sel)? {
+            HistoryRow::Entry(i) => self.history.get(*i),
+            HistoryRow::Host { .. } => None,
+        }
+    }
+
+    /// The History list: requests grouped by host, in order of execution. Groups
+    /// come in the order of their first request; a closed group shows only its line.
+    pub fn history_rows(&self) -> Vec<HistoryRow> {
+        // `history` is newest first
+        let mut groups: Vec<(&str, Vec<usize>)> = Vec::new();
+        for (i, s) in self.history.iter().enumerate().rev() {
+            let host = s.host();
+            match groups.iter_mut().find(|(h, _)| *h == host) {
+                Some((_, items)) => items.push(i),
+                None => groups.push((host, vec![i])),
+            }
+        }
+        let mut out = Vec::new();
+        for (host, items) in groups {
+            let open = !self.history_closed.contains(host);
+            out.push(HistoryRow::Host {
+                host: host.to_owned(),
+                open,
+            });
+            if open {
+                out.extend(items.into_iter().map(HistoryRow::Entry));
+            }
+        }
+        out
+    }
+
+    /// Opens or closes the host group on History row `row`.
+    fn toggle_history_host(&mut self, row: usize) {
+        if let Some(HistoryRow::Host { host, .. }) = self.history_rows().into_iter().nth(row)
+            && !self.history_closed.remove(&host)
+        {
+            self.history_closed.insert(host);
+        }
     }
 
     /// Index into [`App::projects`] of the project whose context is open.
@@ -1622,7 +1672,13 @@ impl App {
             }
             Msg::History(list) => {
                 self.history = list;
-                self.history_sel = self.history_sel.min(self.history.len().saturating_sub(1));
+                self.history_sel = self
+                    .history_sel
+                    .min(self.history_rows().len().saturating_sub(1));
+                if self.history_sel == 0 && self.history_rows().len() > 1 {
+                    // rest on the first request, not on its host line
+                    self.history_sel = 1;
+                }
                 self.request_preview();
             }
             Msg::Projects(list) => {
@@ -3087,9 +3143,10 @@ impl App {
                 rows.get(y_in_list as usize + offset).copied().flatten()
             }
             Tab::History => {
-                let selected_row = (!self.history.is_empty()).then_some(self.history_sel);
+                let rows = self.history_rows().len();
+                let selected_row = (rows > 0).then_some(self.history_sel);
                 let row = y_in_list as usize + ui::list_offset(selected_row, height);
-                (row < self.history.len()).then_some(row)
+                (row < rows).then_some(row)
             }
         };
         let Some(item) = item else {
@@ -3097,6 +3154,15 @@ impl App {
         };
 
         self.focus = Focus::List;
+        if self.tab == Tab::History
+            && matches!(self.history_rows().get(item), Some(HistoryRow::Host { .. }))
+        {
+            // One click opens or closes a host group.
+            self.select(item);
+            self.toggle_history_host(item);
+            self.last_click = None;
+            return;
+        }
         if self.tab == Tab::Projects {
             let is_request = matches!(
                 self.panel_rows().get(item),
@@ -3222,10 +3288,11 @@ impl App {
 
     fn move_selection(&mut self, delta: isize) {
         let project_len = self.panel_rows().len();
+        let history_len = self.history_rows().len();
         let (sel, len) = match self.tab {
             Tab::Projects => (&mut self.projects_sel, project_len),
             Tab::Stored => (&mut self.stored_sel, self.templates.len()),
-            Tab::History => (&mut self.history_sel, self.history.len()),
+            Tab::History => (&mut self.history_sel, history_len),
         };
         if len == 0 {
             return;
@@ -3256,6 +3323,10 @@ impl App {
             Tab::Stored => self.selected_template().map(|t| t.template.to_request()),
             Tab::History => match (self.selected_summary(), &self.preview) {
                 (Some(s), Some(e)) if e.id == s.id => Some(e.request.clone()),
+                (None, _) => {
+                    self.toggle_history_host(self.history_sel);
+                    None
+                }
                 _ => None,
             },
         };

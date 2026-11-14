@@ -55,6 +55,27 @@ pub struct Summary {
     pub status: Option<u16>,
 }
 
+impl Summary {
+    /// The `host:port` the request went to: the URL without scheme, credentials and path.
+    pub fn host(&self) -> &str {
+        split_url(&self.url).0
+    }
+
+    /// The path and query of the URL; `/` when it has none.
+    pub fn uri(&self) -> &str {
+        split_url(&self.url).1
+    }
+}
+
+/// `https://u@api.dev:8080/a?b=1` -> (`api.dev:8080`, `/a?b=1`).
+fn split_url(url: &str) -> (&str, &str) {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, uri) = rest.split_at(end);
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    (host, if uri.is_empty() { "/" } else { uri })
+}
+
 #[derive(Clone)]
 pub struct History {
     pool: SqlitePool,

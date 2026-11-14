@@ -458,6 +458,9 @@ async fn with_two_history_entries() -> Harness {
     h.app.refresh_history();
     pump(&mut h, |a| a.history.len() == 2).await;
     h.app.set_tab(Tab::History);
+    // rows: host, first, second (execution order); rest on the newest
+    h.app.handle_key(key(KeyCode::Char('j')));
+    assert_eq!(h.app.history_sel, 2);
     h
 }
 
@@ -469,7 +472,7 @@ async fn hovering_history_previews_request_and_response_without_sending() {
     assert_eq!(h.app.view().request.url, "http://x/second");
     assert!(matches!(h.app.view().outcome, Some(Outcome::Error(m)) if m == "boom"));
 
-    h.app.handle_key(key(KeyCode::Char('j')));
+    h.app.handle_key(key(KeyCode::Char('k')));
     pump(&mut h, |a| a.view().request.url == "http://x/first").await;
     assert!(matches!(h.app.view().outcome, Some(Outcome::Response(r)) if r.status == 200));
     let out = text(&render(&h.app, 120, 30));
@@ -609,13 +612,13 @@ async fn clicking_empty_list_space_changes_nothing_and_the_response_box_takes_fo
     click(&mut h.app, a.list.x + 1, a.list.y + 10); // below the two rows
     assert_eq!(
         (h.app.history_sel, h.app.focus, h.app.tab),
-        (0, Focus::List, Tab::History)
+        (2, Focus::List, Tab::History)
     );
 
     click(&mut h.app, a.response_body.x + 1, a.response_body.y + 1);
     assert_eq!(
         (h.app.history_sel, h.app.focus, h.app.tab),
-        (0, Focus::Response, Tab::History)
+        (2, Focus::Response, Tab::History)
     );
     assert!(h.app.modal.is_none(), "one click only focuses");
 }
@@ -670,18 +673,20 @@ async fn long_history_list_clicks_hit_the_rows_that_are_drawn() {
     pump(&mut h, |a| a.history.len() == 40).await;
     h.app.set_tab(Tab::History);
     for _ in 0..39 {
-        h.app.handle_key(key(KeyCode::Char('j'))); // newest first: bottom = n00
+        h.app.handle_key(key(KeyCode::Char('j'))); // execution order: bottom = n39
     }
-    assert_eq!(h.app.history_sel, 39);
+    // host line + 40 requests
+    assert_eq!(h.app.history_sel, 40);
 
     let a = ui::areas(SCREEN);
     let drawn = text(&render(&h.app, 120, 30));
-    // selection last: the top visible row is 40 - list height
-    let top = 40 - a.list.height as usize;
-    let top_url = format!("http://x/n{:02}", 39 - top);
-    let above_url = format!("http://x/n{:02}", 39 - top + 1);
+    // selection last: the top visible row is 41 - list height; row r is request n(r-1)
+    let top = 41 - a.list.height as usize;
+    let top_url = format!("http://x/n{:02}", top - 1);
+    // rows show the URI, not the full URL
+    let (top_uri, above_uri) = (format!("/n{:02}", top - 1), format!("/n{:02}", top - 2));
     assert!(
-        drawn.contains(&top_url) && !drawn.contains(&above_url),
+        drawn.contains(&top_uri) && !drawn.contains(&above_uri),
         "{drawn}"
     );
 
@@ -764,15 +769,15 @@ async fn wheel_moves_list_selection_and_scrolls_response() {
     let mut h = with_two_history_entries().await;
     let a = ui::areas(SCREEN);
     h.app.handle_mouse(
-        mouse(MouseEventKind::ScrollDown, a.list.x + 1, a.list.y),
+        mouse(MouseEventKind::ScrollUp, a.list.x + 1, a.list.y),
         SCREEN,
     );
     assert_eq!(h.app.history_sel, 1);
     h.app.handle_mouse(
-        mouse(MouseEventKind::ScrollUp, a.list.x + 1, a.list.y),
+        mouse(MouseEventKind::ScrollDown, a.list.x + 1, a.list.y),
         SCREEN,
     );
-    assert_eq!(h.app.history_sel, 0);
+    assert_eq!(h.app.history_sel, 2);
 
     h.app.handle_mouse(
         mouse(
@@ -809,7 +814,7 @@ fn hit_areas_match_the_layout() {
 async fn y_copies_the_pretty_response_body_without_sending() {
     let mut h = with_two_history_entries().await;
     pump(&mut h, |a| a.view().previewing).await;
-    h.app.handle_key(key(KeyCode::Char('j'))); // older entry: JSON response {"x":1}
+    h.app.handle_key(key(KeyCode::Char('k'))); // older entry: JSON response {"x":1}
     pump(&mut h, |a| a.view().request.url == "http://x/first").await;
 
     h.app.handle_key(key(KeyCode::Char('y')));
@@ -840,7 +845,7 @@ async fn copy_error_message_and_nothing_to_copy() {
 #[tokio::test]
 async fn right_click_on_response_body_copies() {
     let mut h = with_two_history_entries().await;
-    h.app.handle_key(key(KeyCode::Char('j')));
+    h.app.handle_key(key(KeyCode::Char('k')));
     pump(&mut h, |a| a.view().request.url == "http://x/first").await;
     let a = ui::areas(SCREEN);
     h.app.handle_mouse(
@@ -1412,7 +1417,7 @@ async fn clicking_outside_the_panel_closes_it() {
 async fn hovered_history_entry_can_be_opened_from_the_response_box() {
     let mut h = with_two_history_entries().await;
     pump(&mut h, |a| a.view().previewing).await;
-    h.app.handle_key(key(KeyCode::Char('j'))); // the older entry: JSON response
+    h.app.handle_key(key(KeyCode::Char('k'))); // the older entry: JSON response
     pump(&mut h, |a| a.view().request.url == "http://x/first").await;
 
     let a = ui::areas(SCREEN);
@@ -3800,4 +3805,51 @@ async fn sending_saves_the_bound_request() {
     .expect("saved on send");
     let rest = want[0].requests[0].api.as_rest().unwrap();
     assert_eq!(rest.path, "/a");
+}
+
+#[tokio::test]
+async fn history_groups_by_host_in_execution_order_and_collapses() {
+    let mut h = harness().await;
+    for url in [
+        "http://a.dev:80/one",
+        "http://b.dev/two?x=1",
+        "http://a.dev:80/three",
+    ] {
+        let req = Request::Http(HttpRequest {
+            url: url.into(),
+            ..Default::default()
+        });
+        h.store.record(&req, &response_outcome()).await.unwrap();
+    }
+    h.app.refresh_history();
+    pump(&mut h, |a| a.history.len() == 3).await;
+    h.app.set_tab(Tab::History);
+
+    let drawn = text(&render(&h.app, 120, 30));
+    let at = |needle: &str| {
+        drawn
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle}: {drawn}"))
+    };
+    assert!(
+        at("a.dev:80") < at("/one") && at("/one") < at("/three"),
+        "{drawn}"
+    );
+    assert!(
+        at("/three") < at("b.dev") && at("b.dev") < at("/two?x=1"),
+        "{drawn}"
+    );
+    assert!(
+        !drawn.contains("http://a.dev"),
+        "rows show the URI: {drawn}"
+    );
+
+    // Enter on the host line closes its group
+    h.app.handle_key(key(KeyCode::Up));
+    h.app.handle_key(key(KeyCode::Enter));
+    let drawn = text(&render(&h.app, 120, 30));
+    assert!(
+        !drawn.contains("/one") && drawn.contains("/two?x=1"),
+        "{drawn}"
+    );
 }
