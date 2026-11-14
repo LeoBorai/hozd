@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 pub use app::{
-    App, Focus, GrpcView, HISTORY_LIMIT, LeftTab, LoadedSchema, Msg, Picker, PickerItem,
+    App, CenterTab, Focus, GrpcView, HISTORY_LIMIT, LeftTab, LoadedSchema, Msg, Picker, PickerItem,
     PickerOrigin, PickerTag, ProjectRow, ProjectRowKind, RequestTab, RequestView, SchemaKey,
     SchemaMode, StoredTemplate, Tab, View,
 };

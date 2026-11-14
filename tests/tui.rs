@@ -55,7 +55,9 @@ async fn harness_full(
     let loaded = projects
         .map(|_| load_projects(&tmp.path().join("projects")))
         .unwrap_or_default();
-    let app = App::new(fake.clone(), grpc.clone(), store.clone(), loaded, tx);
+    let mut app = App::new(fake.clone(), grpc.clone(), store.clone(), loaded, tx);
+    // Most tests predate the Projects tab and drive the History layout.
+    app.set_tab(Tab::History);
     Harness {
         app,
         rx,
@@ -255,6 +257,7 @@ async fn the_schema_file_input_suggests_paths_and_tab_accepts() {
 #[tokio::test]
 async fn left_panel_shows_projects_and_history_tabs_with_empty_hints() {
     let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
     let out = text(&render(&h.app, 120, 30));
     assert!(out.contains("Projects") && out.contains("History") && !out.contains("Stored"));
     assert!(out.contains("no projects"));
@@ -576,7 +579,7 @@ async fn clicking_the_tab_row_never_reaches_stored() {
     let mut h = harness().await;
     let a = ui::areas(SCREEN);
     click(&mut h.app, a.tabs.x + 25, a.tabs.y); // right of " History "
-    assert_eq!(h.app.tab, Tab::Projects);
+    assert_eq!(h.app.tab, Tab::History);
     click(&mut h.app, a.tabs.x + 13, a.tabs.y); // inside " History "
     assert_eq!((h.app.tab, h.app.focus), (Tab::History, Focus::List));
     click(&mut h.app, a.tabs.x + 2, a.tabs.y); // inside " Projects "
@@ -3498,6 +3501,7 @@ async fn projects_tab_shows_a_collapsible_tree_and_loads_requests() {
     use hozd::model::{Directory, Project, Request as PRequest, RestRequest, Server};
 
     let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
     let mut project = Project::new("Pets");
     project.servers.push(Server {
         url: "http://pets.test".into(),
@@ -3527,4 +3531,45 @@ async fn projects_tab_shows_a_collapsible_tree_and_loads_requests() {
     h.app.handle_key(key(KeyCode::Enter)); // load request
     assert_eq!(h.app.focus, Focus::Url);
     assert_eq!(h.app.editor_request().url, "http://pets.test/pets");
+}
+
+#[tokio::test]
+async fn projects_tab_adds_request_and_metadata_tabs_over_the_center() {
+    use hozd::model::{Project, Request as PRequest, RestRequest};
+    use hozd::tui::CenterTab;
+
+    let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
+    let out = text(&render(&h.app, 120, 30));
+    assert!(out.contains("Request") && out.contains("Metadata"), "{out}");
+
+    let mut project = Project::new("Pets");
+    project.description = Some("All about pets".into());
+    let mut req = PRequest::rest("list", RestRequest::new(hozd::model::Method::Get, "/pets"));
+    req.description = Some("Lists the pets".into());
+    project.requests.push(req);
+    h.store.save_project(&project).await.unwrap();
+    h.app.refresh_projects();
+    pump(&mut h, |a| !a.projects.is_empty()).await;
+
+    let a = ui::areas_with(SCREEN, Kind::Http, Some(CenterTab::Request));
+    click(&mut h.app, a.center_tabs.x + 12, a.center_tabs.y); // inside " Metadata "
+    assert_eq!(h.app.center_tab, CenterTab::Metadata);
+    let out = text(&render(&h.app, 120, 30));
+    assert!(
+        out.contains("Title (Project)") && out.contains("All about pets"),
+        "{out}"
+    );
+
+    h.app.handle_key(key(KeyCode::Enter)); // open project
+    h.app.handle_key(key(KeyCode::Down)); // the request
+    let out = text(&render(&h.app, 120, 30));
+    assert!(out.contains("Lists the pets"), "{out}");
+
+    h.app.handle_key(key(KeyCode::Char('r')));
+    assert_eq!(h.app.center_tab, CenterTab::Request);
+
+    h.app.set_tab(Tab::History);
+    let out = text(&render(&h.app, 120, 30));
+    assert!(!out.contains("Metadata"), "tabs only in the Projects tab");
 }

@@ -50,12 +50,23 @@ pub enum Tab {
     History,
 }
 
+/// The tabs over the center panel while the Projects tab is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CenterTab {
+    /// The request editor.
+    #[default]
+    Request,
+    /// Title and description of the selected project, directory or request.
+    Metadata,
+}
+
 /// One visible line of the Projects tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectRow {
     pub depth: usize,
     pub id: String,
     pub name: String,
+    pub description: Option<String>,
     pub kind: ProjectRowKind,
     /// Index into [`App::projects`].
     pub project: usize,
@@ -353,6 +364,8 @@ pub struct App {
     pub open_nodes: HashSet<String>,
     /// Selected row of [`App::project_rows`].
     pub projects_sel: usize,
+    /// The selected tab over the center panel; only shown in the Projects tab.
+    pub center_tab: CenterTab,
     pub history: Vec<Summary>,
     pub history_sel: usize,
     /// Whether the editor builds an HTTP or a gRPC request.
@@ -493,6 +506,7 @@ impl App {
             projects: Vec::new(),
             open_nodes: HashSet::new(),
             projects_sel: 0,
+            center_tab: CenterTab::default(),
             history: Vec::new(),
             history_sel: 0,
             kind: Kind::Http,
@@ -978,6 +992,7 @@ impl App {
                     depth,
                     id: r.id.clone(),
                     name: r.name.clone(),
+                    description: r.description.clone(),
                     kind: ProjectRowKind::Request { method },
                     project,
                 });
@@ -996,6 +1011,7 @@ impl App {
                     depth,
                     id: d.id.clone(),
                     name: d.name.clone(),
+                    description: d.description.clone(),
                     kind: ProjectRowKind::Directory { open: is_open },
                     project,
                 });
@@ -1013,6 +1029,7 @@ impl App {
                 depth: 0,
                 id: p.id.clone(),
                 name: p.name.clone(),
+                description: p.description.clone(),
                 kind: ProjectRowKind::Project { open: is_open },
                 project: pi,
             });
@@ -1036,6 +1053,16 @@ impl App {
             .into_iter()
             .find(|r| r.id == row.id)?;
         Some(to_client_request(project, request))
+    }
+
+    /// The center tab to show: `Some` only while the Projects tab is showing.
+    pub fn center_tab(&self) -> Option<CenterTab> {
+        (self.tab == Tab::Projects).then_some(self.center_tab)
+    }
+
+    /// The selected row of the Projects tree.
+    pub fn selected_project_row(&self) -> Option<ProjectRow> {
+        self.project_rows().into_iter().nth(self.projects_sel)
     }
 
     /// Opens or closes the project or directory at row `row`.
@@ -2125,6 +2152,10 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Enter => self.activate(),
+            KeyCode::Char('m') if self.tab == Tab::Projects => {
+                self.center_tab = CenterTab::Metadata
+            }
+            KeyCode::Char('r') if self.tab == Tab::Projects => self.center_tab = CenterTab::Request,
             KeyCode::Right | KeyCode::Char('l') | KeyCode::Left | KeyCode::Char('h')
                 if self.tab == Tab::Projects =>
             {
@@ -2199,7 +2230,7 @@ impl App {
     }
 
     fn handle_mouse_event(&mut self, event: MouseEvent, screen: Rect) {
-        let areas = ui::areas_for(screen, self.view().request.kind);
+        let areas = ui::areas_with(screen, self.view().request.kind, self.center_tab());
         let at = Position::new(event.column, event.row);
         if self.help.is_some() {
             return;
@@ -2351,7 +2382,11 @@ impl App {
             }
             return self.open_log();
         }
-        if areas.tabs.contains(at) {
+        if areas.center_tabs.contains(at) {
+            if let Some(tab) = ui::center_tab_at(areas.center_tabs, at.x) {
+                self.center_tab = tab;
+            }
+        } else if areas.tabs.contains(at) {
             if let Some(tab) = ui::tab_at(areas.tabs, at.x) {
                 self.focus = Focus::List;
                 self.set_tab(tab);
