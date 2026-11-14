@@ -47,6 +47,7 @@
 //! unknown case.
 
 mod common;
+mod openapi;
 mod postman;
 mod project;
 mod rest;
@@ -57,9 +58,23 @@ pub use common::{
     Script, ScriptKind, SecurityScheme, Server, Source, SourceFormat, Variable, derive_id,
     is_derived, new_id,
 };
+pub use openapi::{OpenApiVersion, export_openapi, import_openapi};
 pub use postman::{export_postman, import_postman};
 pub use project::{ApiKind, ApiRequest, Directory, Project, Request};
 pub use rest::{
     BodyContent, FieldKind, FormField, Method, OperationMeta, ParamLocation, RestBody, RestParam,
     RestRequest, RestResponse, RestSettings,
 };
+
+/// Imports a Postman v2.1, OpenAPI 3.x or Swagger 2.0 document, detecting which.
+pub fn import(doc: &serde_json::Value) -> Result<Project, ConvertError> {
+    if doc.get("openapi").is_some() || doc.get("swagger").is_some() {
+        import_openapi(doc)
+    } else if doc.pointer("/info/schema").is_some() {
+        import_postman(doc)
+    } else {
+        Err(ConvertError::Unsupported(
+            "not a Postman collection, OpenAPI or Swagger document".to_owned(),
+        ))
+    }
+}

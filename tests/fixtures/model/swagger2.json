@@ -1,0 +1,49 @@
+{
+  "swagger": "2.0",
+  "info": { "title": "Legacy", "version": "0.9" },
+  "host": "legacy.example.com",
+  "basePath": "/api",
+  "schemes": ["https", "http"],
+  "consumes": ["application/json"],
+  "produces": ["application/json"],
+  "tags": [ { "name": "items" } ],
+  "paths": {
+    "/items/{id}": {
+      "get": {
+        "tags": ["items"],
+        "operationId": "getItem",
+        "summary": "Get item",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "type": "string" },
+          { "name": "expand", "in": "query", "type": "array", "items": { "type": "string" }, "collectionFormat": "csv" }
+        ],
+        "responses": {
+          "200": { "description": "ok", "schema": { "$ref": "#/definitions/Item" }, "headers": { "X-Rate": { "type": "integer", "description": "rate" } } },
+          "404": { "description": "missing" }
+        }
+      },
+      "put": {
+        "tags": ["items"],
+        "operationId": "putItem",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "type": "string" },
+          { "name": "body", "in": "body", "required": true, "schema": { "$ref": "#/definitions/Item" } }
+        ],
+        "responses": { "200": { "description": "ok" } },
+        "security": [ { "basic": [] } ]
+      }
+    },
+    "/files": {
+      "post": {
+        "operationId": "upload",
+        "consumes": ["multipart/form-data"],
+        "parameters": [ { "name": "file", "in": "formData", "type": "file", "required": true }, { "name": "note", "in": "formData", "type": "string" } ],
+        "responses": { "200": { "description": "ok" } }
+      }
+    }
+  },
+  "definitions": { "Item": { "type": "object", "properties": { "name": { "type": "string" } } } },
+  "securityDefinitions": { "basic": { "type": "basic" }, "key": { "type": "apiKey", "name": "k", "in": "query" } },
+  "security": [ { "key": [] } ],
+  "x-vendor": 1
+}

@@ -1,0 +1,107 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Pets", "version": "1.2.0", "description": "Pet API", "termsOfService": "https://example.com/tos", "contact": { "name": "Ops" }, "x-logo": "logo.png" },
+  "servers": [
+    { "url": "https://{env}.example.com/v1", "description": "Main", "variables": { "env": { "default": "api", "enum": ["api", "staging"], "description": "Environment" } } }
+  ],
+  "tags": [
+    { "name": "pets", "description": "Pet operations", "externalDocs": { "url": "https://example.com/pets" } },
+    { "name": "store", "x-display": "Store" }
+  ],
+  "security": [ { "bearerAuth": [] } ],
+  "paths": {
+    "/pets": {
+      "get": {
+        "tags": ["pets", "public"],
+        "summary": "List pets",
+        "description": "All pets",
+        "operationId": "listPets",
+        "parameters": [
+          { "name": "limit", "in": "query", "description": "How many", "schema": { "type": "integer" }, "example": "10", "style": "form" },
+          { "name": "X-Trace", "in": "header", "required": true, "schema": { "type": "string" } },
+          { "name": "session", "in": "cookie", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "A list",
+            "headers": { "X-Rate": { "description": "limit", "schema": { "type": "integer" } } },
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Pets" }, "example": [ { "id": 1 } ] },
+              "application/xml": { "schema": { "type": "string" } }
+            },
+            "links": { "next": { "operationId": "listPets" } }
+          },
+          "default": { "description": "Error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        },
+        "x-codegen": { "name": "list" }
+      },
+      "post": {
+        "tags": ["pets"],
+        "summary": "Create pet",
+        "operationId": "createPet",
+        "deprecated": true,
+        "requestBody": {
+          "description": "Pet to add",
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/Pet" }, "example": { "name": "Rex" }, "examples": { "dog": { "value": { "name": "Rex" } } } },
+            "application/xml": { "schema": { "$ref": "#/components/schemas/Pet" } }
+          }
+        },
+        "responses": { "201": { "description": "Created" } },
+        "security": [ { "apiKey": [] } ]
+      }
+    },
+    "/pets/{petId}": {
+      "get": {
+        "tags": ["pets"],
+        "summary": "Get pet",
+        "operationId": "getPet",
+        "parameters": [ { "name": "petId", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Pet id" } ],
+        "responses": { "200": { "description": "A pet", "content": { "text/plain": { "example": "rex" } } } },
+        "security": []
+      }
+    },
+    "/orders": {
+      "post": {
+        "tags": ["store"],
+        "operationId": "placeOrder",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": { "schema": { "type": "object", "properties": { "item": { "type": "string" }, "qty": { "type": "integer" } } } }
+          }
+        },
+        "responses": { "200": { "description": "ok" } }
+      }
+    },
+    "/upload": {
+      "post": {
+        "operationId": "upload",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": { "schema": { "type": "object", "properties": { "caption": { "type": "string" }, "file": { "type": "string", "format": "binary" } } }, "encoding": { "file": { "contentType": "image/png" } } }
+          }
+        },
+        "responses": { "200": { "description": "ok" } }
+      }
+    },
+    "/health": {
+      "x-internal": true,
+      "get": { "operationId": "health", "responses": { "200": { "description": "up" } } }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Pet": { "type": "object", "properties": { "name": { "type": "string" } } },
+      "Pets": { "type": "array", "items": { "$ref": "#/components/schemas/Pet" } },
+      "Error": { "type": "object", "properties": { "message": { "type": "string" } } }
+    },
+    "securitySchemes": {
+      "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT", "description": "JWT" },
+      "apiKey": { "type": "apiKey", "name": "X-API-Key", "in": "header" },
+      "oauth": { "type": "oauth2", "flows": { "implicit": { "authorizationUrl": "https://example.com/auth", "scopes": { "read": "Read" } } } }
+    }
+  },
+  "externalDocs": { "url": "https://example.com/docs" },
+  "x-api-id": "pets-1"
+}
