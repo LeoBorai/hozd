@@ -51,6 +51,7 @@ mod openapi;
 mod postman;
 mod project;
 mod rest;
+mod send;
 mod util;
 
 pub use common::{
@@ -65,6 +66,7 @@ pub use rest::{
     BodyContent, FieldKind, FormField, Method, OperationMeta, ParamLocation, RestBody, RestParam,
     RestRequest, RestResponse, RestSettings,
 };
+pub use send::{from_client_request, to_client_request};
 
 /// Imports a Postman v2.1, OpenAPI 3.x or Swagger 2.0 document, detecting which.
 pub fn import(doc: &serde_json::Value) -> Result<Project, ConvertError> {

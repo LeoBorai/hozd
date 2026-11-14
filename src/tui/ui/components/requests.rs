@@ -9,7 +9,7 @@ use ratatui::widgets::{List, ListItem, ListState, Tabs};
 use crate::client::{Kind, Method, status_name};
 use crate::project::TemplateKind;
 
-use crate::tui::app::{App, Focus, Tab};
+use crate::tui::app::{App, Focus, PanelRow, ProjectRowKind, Tab};
 
 use super::super::layout::*;
 use super::*;
@@ -26,10 +26,13 @@ pub(crate) fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(outer, area);
 
     let (tabs, list) = left_areas(area);
-    // The Stored tab is hidden; History is the only one shown.
-    let selected = 0;
+    // The Stored tab is hidden; Projects and History are shown.
+    let selected = match app.tab {
+        Tab::Projects | Tab::Stored => 0,
+        Tab::History => 1,
+    };
     frame.render_widget(
-        Tabs::new(["History"])
+        Tabs::new(["Projects", "History"])
             .select(selected)
             .highlight_style(
                 Style::new()
@@ -41,24 +44,130 @@ pub(crate) fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let (items, selected_row) = match app.tab {
+        Tab::Projects => project_rows(app),
         Tab::Stored => stored_rows(app),
         Tab::History => history_rows(app),
     };
     let mut state = ListState::default()
         .with_selected(selected_row)
         .with_offset(list_offset(selected_row, list.height));
-    let highlight = if focused {
-        Style::new()
+    let highlight = match (focused, app.tab) {
+        // the same colors as selected text
+        (true, Tab::Projects) => SELECTION.add_modifier(Modifier::BOLD),
+        (true, _) => Style::new()
             .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::new().add_modifier(Modifier::BOLD)
+            .add_modifier(Modifier::BOLD),
+        (false, _) => Style::new().add_modifier(Modifier::BOLD),
     };
     frame.render_stateful_widget(
         List::new(items).highlight_style(highlight),
         list,
         &mut state,
     );
+    if let (Tab::Projects, Some(name)) = (app.tab, &app.naming)
+        && focused
+        && selected_row.is_some_and(|r| r == 0)
+    {
+        // the name is typed on the first row, after the two-column "+ " marker
+        let col = name.cursor().1 as u16;
+        let x = (list.x + 2 + col).min(list.right().saturating_sub(1));
+        frame.set_cursor_position(ratatui::layout::Position::new(x, list.y));
+    }
+}
+
+pub(crate) fn project_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) {
+    let green = Style::new().fg(Color::Green);
+    // light enough to read on the blue selection
+    let gray = Style::new().fg(Color::Gray);
+    let rows = app
+        .panel_rows()
+        .into_iter()
+        .map(|row| -> Line<'static> {
+            let r = match row {
+                PanelRow::CreateProject => {
+                    return match &app.naming {
+                        Some(name) => Line::from(vec![
+                            Span::styled("+ ", green),
+                            Span::raw(name.lines().join(" ")),
+                            Span::styled(" \u{23ce}", gray),
+                        ]),
+                        None => Line::styled("+ Create project", green),
+                    };
+                }
+                PanelRow::CreateDirectory => {
+                    return Line::from(vec![
+                        Span::styled("+ Create directory", green),
+                        Span::styled("  Ctrl+Shift+D", gray),
+                    ]);
+                }
+                PanelRow::CreateRequest => {
+                    return Line::from(vec![
+                        Span::styled("+ Create request", green),
+                        Span::styled("  Ctrl+Shift+R", gray),
+                    ]);
+                }
+                PanelRow::Node(r) => r,
+            };
+            let indent = Span::raw("  ".repeat(r.depth));
+            let name = if r.name.is_empty() {
+                "(untitled)".to_owned()
+            } else {
+                r.name.clone()
+            };
+            let folder = |open: bool, bold: bool, icon: &str| {
+                let style = Style::new().fg(Color::Cyan);
+                let style = if bold {
+                    style.add_modifier(Modifier::BOLD)
+                } else {
+                    style
+                };
+                vec![
+                    indent.clone(),
+                    Span::raw(if open { "\u{25bc} " } else { "\u{25b6} " }),
+                    Span::styled(format!("{icon} {name}"), style),
+                ]
+            };
+            Line::from(match &r.kind {
+                ProjectRowKind::Project { open } => folder(*open, true, "\u{2731}"),
+                ProjectRowKind::Directory { open } => folder(*open, false, "\u{2756}"),
+                ProjectRowKind::Request { method } => {
+                    let m = match method.parse::<Method>() {
+                        Ok(m) => method_span(m),
+                        Err(_) => Span::raw(format!("{method:<6}")),
+                    };
+                    vec![
+                        indent,
+                        Span::styled("\u{269b} ", Style::new().fg(Color::Yellow)),
+                        m,
+                        Span::raw(format!(" {name}")),
+                    ]
+                }
+            })
+        })
+        .enumerate()
+        .map(|(i, line)| {
+            // the selected row takes the highlight's colors, as selected text does
+            ListItem::new(if app.focus == Focus::List && i == app.projects_sel {
+                uncolored(line)
+            } else {
+                line
+            })
+        })
+        .collect();
+    (rows, Some(app.projects_sel))
+}
+
+/// `line` without its colors, so the highlight's own colors show.
+fn uncolored(line: Line<'static>) -> Line<'static> {
+    Line::from(
+        line.spans
+            .into_iter()
+            .map(|mut span| {
+                span.style.fg = None;
+                span
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 pub(crate) fn stored_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) {

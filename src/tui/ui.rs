@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 
-use super::app::App;
+use super::app::{App, CenterTab};
 
 mod components;
 mod layout;
@@ -23,11 +23,26 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     let view = app.view();
     draw_left(frame, app, left);
-    draw_center(frame, app, &view.request, view.previewing, center);
+    match app.center_tab() {
+        None => draw_center(frame, app, &view.request, view.previewing, center),
+        Some(tab) => {
+            let (tabs, rest) = center_split(center);
+            draw_center_tabs(frame, app, tabs);
+            match tab {
+                CenterTab::Request => draw_center(frame, app, &view.request, view.previewing, rest),
+                CenterTab::Metadata => draw_metadata(frame, app, rest),
+            }
+        }
+    }
     draw_right(frame, app, view.outcome, right);
     draw_status(frame, app, status);
     if !app.suggestions.items.is_empty() {
         let [_, center, _] = panel_areas(main);
+        let center = if app.center_tab().is_some() {
+            center_split(center).1
+        } else {
+            center
+        };
         let areas = center_areas(center, app.kind);
         draw_suggestions(
             frame,
@@ -37,6 +52,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     if app.picker.is_some() {
         draw_picker(frame, app, frame.area());
+    }
+    if let Some(confirm) = &app.confirm {
+        draw_confirm(frame, confirm, frame.area());
     }
     if app.help.is_some() {
         draw_help(frame, app, frame.area());

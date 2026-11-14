@@ -3,7 +3,7 @@
 use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
 
 use crate::client::{BodyKind, Kind};
-use crate::tui::app::{App, LeftTab, RequestTab, Tab};
+use crate::tui::app::{App, CenterTab, LeftTab, RequestTab, Tab};
 
 /// Left, center and right panels on a 12-column grid: 3-6-3.
 pub fn panel_areas(area: Rect) -> [Rect; 3] {
@@ -39,6 +39,40 @@ pub struct Areas {
     pub preview: Rect,
     pub response: Rect,
     pub response_body: Rect,
+    /// The Request / Metadata tab row over the center panel; empty outside the Projects tab.
+    pub center_tabs: Rect,
+    /// The Metadata tab's title and description boxes (outer); empty on other tabs.
+    pub meta_title: Rect,
+    pub meta_desc: Rect,
+}
+
+/// The Metadata tab's boxes within the center panel's content area: title, description.
+pub fn metadata_areas(rest: Rect) -> (Rect, Rect) {
+    let [title, description] =
+        Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(rest);
+    (title, description)
+}
+
+pub(crate) const REQUEST_CENTER_TAB_WIDTH: u16 = " Request ".len() as u16;
+pub(crate) const METADATA_CENTER_TAB_WIDTH: u16 = " Metadata ".len() as u16;
+
+/// Splits the center panel into its tab row and the rest.
+pub fn center_split(center: Rect) -> (Rect, Rect) {
+    let [tabs, rest] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(center);
+    (tabs, rest)
+}
+
+/// Which center tab title sits under column `x` of the tab row.
+pub fn center_tab_at(tabs: Rect, x: u16) -> Option<CenterTab> {
+    let offset = x.checked_sub(tabs.x)?;
+    match offset {
+        o if o < REQUEST_CENTER_TAB_WIDTH => Some(CenterTab::Request),
+        o if o == REQUEST_CENTER_TAB_WIDTH => None, // divider
+        o if o < REQUEST_CENTER_TAB_WIDTH + 1 + METADATA_CENTER_TAB_WIDTH => {
+            Some(CenterTab::Metadata)
+        }
+        _ => None,
+    }
 }
 
 /// Splits the left column 50/50: the request list on top, the log below. Both are outer
@@ -191,11 +225,36 @@ pub fn areas(area: Rect) -> Areas {
 
 /// The regions of the layout the center panel has for `kind`.
 pub fn areas_for(area: Rect, kind: Kind) -> Areas {
+    areas_with(area, kind, None)
+}
+
+/// Like [`areas_for`]; `center_tab` is the selected center tab when the Projects tab is
+/// showing (which adds the tab row), `None` otherwise. The Metadata tab has no request
+/// boxes, so those are empty then.
+pub fn areas_with(area: Rect, kind: Kind, center_tab: Option<CenterTab>) -> Areas {
     let (main, _) = main_area(area);
     let [left, center, right] = panel_areas(main);
     let (requests, logs) = left_split(left);
     let (tabs, list) = left_areas(requests);
-    let center = center_areas(center, kind);
+    let (center_tabs, center) = match center_tab {
+        Some(_) => center_split(center),
+        None => (Rect::ZERO, center),
+    };
+    let (meta_title, meta_desc) = match center_tab {
+        Some(CenterTab::Metadata) => metadata_areas(center),
+        _ => (Rect::ZERO, Rect::ZERO),
+    };
+    let mut center = center_areas(center, kind);
+    if center_tab == Some(CenterTab::Metadata) {
+        center = Center {
+            method: Rect::ZERO,
+            url: Rect::ZERO,
+            schema: Rect::ZERO,
+            rpc: Rect::ZERO,
+            body: Rect::ZERO,
+            preview: Rect::ZERO,
+        };
+    }
     let (response, _, response_body) = right_areas(right);
     Areas {
         tabs,
@@ -209,6 +268,9 @@ pub fn areas_for(area: Rect, kind: Kind) -> Areas {
         preview: center.preview,
         response,
         response_body,
+        center_tabs,
+        meta_title,
+        meta_desc,
     }
 }
 
@@ -233,6 +295,7 @@ pub fn kind_at(url: Rect, at: Position) -> Option<Kind> {
     }
 }
 
+pub(crate) const PROJECTS_TAB_WIDTH: u16 = " Projects ".len() as u16;
 pub(crate) const HISTORY_TAB_WIDTH: u16 = " History ".len() as u16;
 
 /// Which tab title sits under column `x` of the tab row. Matches `Tabs` default padding
@@ -240,8 +303,9 @@ pub(crate) const HISTORY_TAB_WIDTH: u16 = " History ".len() as u16;
 pub fn tab_at(tabs: Rect, x: u16) -> Option<Tab> {
     let offset = x.checked_sub(tabs.x)?;
     match offset {
-        o if o < HISTORY_TAB_WIDTH => Some(Tab::History),
-        o if o == HISTORY_TAB_WIDTH => None, // divider
+        o if o < PROJECTS_TAB_WIDTH => Some(Tab::Projects),
+        o if o == PROJECTS_TAB_WIDTH => None, // divider
+        o if o < PROJECTS_TAB_WIDTH + 1 + HISTORY_TAB_WIDTH => Some(Tab::History),
         _ => None,
     }
 }

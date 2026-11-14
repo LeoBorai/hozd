@@ -94,6 +94,18 @@ impl Directory {
         }
     }
 
+    /// How many directories and requests lie inside this one, at any depth.
+    pub fn contents(&self) -> (usize, usize) {
+        let mut dirs = self.directories.len();
+        let mut requests = self.requests.len();
+        for d in &self.directories {
+            let (nested_dirs, nested_requests) = d.contents();
+            dirs += nested_dirs;
+            requests += nested_requests;
+        }
+        (dirs, requests)
+    }
+
     fn collect<'a>(&'a self, out: &mut Vec<&'a Request>) {
         out.extend(self.requests.iter());
         for d in &self.directories {
@@ -124,7 +136,96 @@ pub struct Project {
     pub extensions: Extensions,
 }
 
+fn find_dir<'a>(dirs: &'a mut [Directory], id: &str) -> Option<&'a mut Directory> {
+    for d in dirs {
+        if d.id == id {
+            return Some(d);
+        }
+        if let Some(found) = find_dir(&mut d.directories, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_request<'a>(dirs: &'a mut [Directory], id: &str) -> Option<&'a mut Request> {
+    for d in dirs {
+        if let Some(r) = d.requests.iter_mut().find(|r| r.id == id) {
+            return Some(r);
+        }
+        if let Some(found) = find_request(&mut d.directories, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 impl Project {
+    /// The directory with `id`, at any depth.
+    pub fn directory_mut(&mut self, id: &str) -> Option<&mut Directory> {
+        find_dir(&mut self.directories, id)
+    }
+
+    /// The request with `id`, at any depth.
+    pub fn request_mut(&mut self, id: &str) -> Option<&mut Request> {
+        if let Some(r) = self.requests.iter_mut().find(|r| r.id == id) {
+            return Some(r);
+        }
+        find_request(&mut self.directories, id)
+    }
+
+    /// Adds `dir` inside the directory `parent`, or at the project root when `parent` is
+    /// `None` or unknown.
+    pub fn add_directory(&mut self, parent: Option<&str>, dir: Directory) {
+        match parent.and_then(|id| find_dir(&mut self.directories, id)) {
+            Some(p) => p.directories.push(dir),
+            None => self.directories.push(dir),
+        }
+    }
+
+    /// Adds `request` inside the directory `parent`, or at the project root when `parent`
+    /// is `None` or unknown.
+    pub fn add_request(&mut self, parent: Option<&str>, request: Request) {
+        match parent.and_then(|id| find_dir(&mut self.directories, id)) {
+            Some(p) => p.requests.push(request),
+            None => self.requests.push(request),
+        }
+    }
+
+    /// Removes the directory or request `id` (a directory takes everything in it with
+    /// it); `false` when this project holds none.
+    pub fn remove_node(&mut self, id: &str) -> bool {
+        fn remove(dirs: &mut Vec<Directory>, requests: &mut Vec<Request>, id: &str) -> bool {
+            let before = dirs.len() + requests.len();
+            dirs.retain(|d| d.id != id);
+            requests.retain(|r| r.id != id);
+            if dirs.len() + requests.len() != before {
+                return true;
+            }
+            dirs.iter_mut()
+                .any(|d| remove(&mut d.directories, &mut d.requests, id))
+        }
+        remove(&mut self.directories, &mut self.requests, id)
+    }
+
+    /// Sets the name and description of the project, directory or request `id`; `false`
+    /// when this project holds none.
+    pub fn set_meta(&mut self, id: &str, name: &str, description: Option<String>) -> bool {
+        if self.id == id {
+            self.name = name.to_owned();
+            self.description = description;
+        } else if let Some(d) = self.directory_mut(id) {
+            d.name = name.to_owned();
+            d.description = description;
+        } else if let Some(r) = self.request_mut(id) {
+            r.name = name.to_owned();
+            r.description = description;
+        } else {
+            return false;
+        }
+        true
+    }
+
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             id: new_id(),
