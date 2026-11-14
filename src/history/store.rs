@@ -8,6 +8,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use serde::{Deserialize, Serialize};
 
+use crate::model::Project;
+
 use crate::client::{
     Body, GraphqlRequest, GrpcOutcome, GrpcRequest, GrpcStatus, Header, HttpRequest, HttpResponse,
     Kind, Method, Outcome, Request, SchemaSource, WsClose, WsMessage, WsOutcome, WsRequest,
@@ -132,6 +134,49 @@ impl History {
         .await?
         .last_insert_rowid();
         Ok(id)
+    }
+
+    /// Stores `project`, replacing the one with the same id.
+    pub async fn save_project(&self, project: &Project) -> Result<(), HistoryError> {
+        let data = project.to_json().map_err(|e| HistoryError::Corrupt {
+            id: 0,
+            reason: e.to_string(),
+        })?;
+        sqlx::query(
+            "INSERT INTO projects (id, name, created_at_ms, data) VALUES (?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, data = excluded.data",
+        )
+        .bind(&project.id)
+        .bind(&project.name)
+        .bind(now_ms())
+        .bind(data)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// All projects, oldest first.
+    pub async fn list_projects(&self) -> Result<Vec<Project>, HistoryError> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT data FROM projects ORDER BY created_at_ms, rowid")
+                .fetch_all(&self.pool)
+                .await?;
+        rows.into_iter()
+            .map(|(data,)| {
+                Project::from_json(&data).map_err(|e| HistoryError::Corrupt {
+                    id: 0,
+                    reason: format!("project: {e}"),
+                })
+            })
+            .collect()
+    }
+
+    pub async fn delete_project(&self, id: &str) -> Result<(), HistoryError> {
+        sqlx::query("DELETE FROM projects WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     /// Newest first.

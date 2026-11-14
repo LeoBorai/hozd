@@ -253,10 +253,13 @@ async fn the_schema_file_input_suggests_paths_and_tab_accepts() {
 }
 
 #[tokio::test]
-async fn left_panel_shows_only_the_history_tab_and_its_empty_hint() {
+async fn left_panel_shows_projects_and_history_tabs_with_empty_hints() {
     let mut h = harness().await;
     let out = text(&render(&h.app, 120, 30));
-    assert!(out.contains("History") && !out.contains("Stored"));
+    assert!(out.contains("Projects") && out.contains("History") && !out.contains("Stored"));
+    assert!(out.contains("no projects"));
+    h.app.set_tab(Tab::History);
+    let out = text(&render(&h.app, 120, 30));
     assert!(out.contains("no requests sent yet"));
 
     h.app.handle_key(key(KeyCode::Char('[')));
@@ -572,10 +575,12 @@ fn click(app: &mut App, x: u16, y: u16) {
 async fn clicking_the_tab_row_never_reaches_stored() {
     let mut h = harness().await;
     let a = ui::areas(SCREEN);
-    click(&mut h.app, a.tabs.x + 12, a.tabs.y); // right of " History "
-    assert_eq!(h.app.tab, Tab::History);
-    click(&mut h.app, a.tabs.x + 2, a.tabs.y); // inside " History "
+    click(&mut h.app, a.tabs.x + 25, a.tabs.y); // right of " History "
+    assert_eq!(h.app.tab, Tab::Projects);
+    click(&mut h.app, a.tabs.x + 13, a.tabs.y); // inside " History "
     assert_eq!((h.app.tab, h.app.focus), (Tab::History, Focus::List));
+    click(&mut h.app, a.tabs.x + 2, a.tabs.y); // inside " Projects "
+    assert_eq!((h.app.tab, h.app.focus), (Tab::Projects, Focus::List));
 }
 
 #[tokio::test]
@@ -3486,4 +3491,40 @@ async fn the_http_preview_shows_variable_values() {
     h.app.handle_key(ctrl('b'));
     let out = text(&render(&h.app, 120, 40));
     assert!(!out.contains("/a?q=abc"), "{out}");
+}
+
+#[tokio::test]
+async fn projects_tab_shows_a_collapsible_tree_and_loads_requests() {
+    use hozd::model::{Directory, Project, Request as PRequest, RestRequest, Server};
+
+    let mut h = harness().await;
+    let mut project = Project::new("Pets");
+    project.servers.push(Server {
+        url: "http://pets.test".into(),
+        ..Server::default()
+    });
+    let mut dir = Directory::new("pets");
+    dir.requests.push(PRequest::rest(
+        "list pets",
+        RestRequest::new(hozd::model::Method::Get, "/pets"),
+    ));
+    project.directories.push(dir);
+    h.store.save_project(&project).await.unwrap();
+    h.app.refresh_projects();
+    pump(&mut h, |a| !a.projects.is_empty()).await;
+
+    assert_eq!(h.app.tab, Tab::Projects);
+    assert_eq!(h.app.project_rows().len(), 1, "projects start closed");
+
+    h.app.handle_key(key(KeyCode::Enter)); // open project
+    h.app.handle_key(key(KeyCode::Down));
+    h.app.handle_key(key(KeyCode::Enter)); // open directory
+    assert_eq!(h.app.project_rows().len(), 3);
+    let out = text(&render(&h.app, 120, 30));
+    assert!(out.contains("Pets") && out.contains("list pets"), "{out}");
+
+    h.app.handle_key(key(KeyCode::Down));
+    h.app.handle_key(key(KeyCode::Enter)); // load request
+    assert_eq!(h.app.focus, Focus::Url);
+    assert_eq!(h.app.editor_request().url, "http://pets.test/pets");
 }

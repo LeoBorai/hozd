@@ -300,3 +300,27 @@ async fn every_body_type_survives_history(pool: SqlitePool) {
         assert_eq!(history.get(id).await.unwrap().unwrap().request, req);
     }
 }
+
+#[sqlx::test]
+async fn projects_round_trip_and_replace_by_id(pool: SqlitePool) {
+    use hozd::model::{Directory, Project, Request as PRequest, RestRequest};
+
+    let store = History::from_pool(pool);
+    let mut project = Project::new("Pets");
+    let mut dir = Directory::new("pets");
+    dir.requests.push(PRequest::rest(
+        "list",
+        RestRequest::new(hozd::model::Method::Get, "/pets"),
+    ));
+    project.directories.push(dir);
+    store.save_project(&project).await.unwrap();
+
+    project.name = "Pet store".into();
+    store.save_project(&project).await.unwrap();
+
+    let all = store.list_projects().await.unwrap();
+    assert_eq!(all, vec![project.clone()]);
+
+    store.delete_project(&project.id).await.unwrap();
+    assert!(store.list_projects().await.unwrap().is_empty());
+}

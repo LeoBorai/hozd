@@ -9,7 +9,7 @@ use ratatui::widgets::{List, ListItem, ListState, Tabs};
 use crate::client::{Kind, Method, status_name};
 use crate::project::TemplateKind;
 
-use crate::tui::app::{App, Focus, Tab};
+use crate::tui::app::{App, Focus, ProjectRowKind, Tab};
 
 use super::super::layout::*;
 use super::*;
@@ -26,10 +26,13 @@ pub(crate) fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(outer, area);
 
     let (tabs, list) = left_areas(area);
-    // The Stored tab is hidden; History is the only one shown.
-    let selected = 0;
+    // The Stored tab is hidden; Projects and History are shown.
+    let selected = match app.tab {
+        Tab::Projects | Tab::Stored => 0,
+        Tab::History => 1,
+    };
     frame.render_widget(
-        Tabs::new(["History"])
+        Tabs::new(["Projects", "History"])
             .select(selected)
             .highlight_style(
                 Style::new()
@@ -41,6 +44,7 @@ pub(crate) fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let (items, selected_row) = match app.tab {
+        Tab::Projects => project_rows(app),
         Tab::Stored => stored_rows(app),
         Tab::History => history_rows(app),
     };
@@ -59,6 +63,44 @@ pub(crate) fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
         list,
         &mut state,
     );
+}
+
+pub(crate) fn project_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) {
+    if app.projects.is_empty() {
+        return (vec![dim("no projects; run `hozd import <file>`")], None);
+    }
+    let rows = app
+        .project_rows()
+        .into_iter()
+        .map(|r| {
+            let indent = Span::raw("  ".repeat(r.depth));
+            let folder = |open: bool, bold: bool| {
+                let style = Style::new().fg(Color::Cyan);
+                let style = if bold {
+                    style.add_modifier(Modifier::BOLD)
+                } else {
+                    style
+                };
+                vec![
+                    indent.clone(),
+                    Span::raw(if open { "\u{25be} " } else { "\u{25b8} " }),
+                    Span::styled(format!("\u{1F4C1} {}", r.name), style),
+                ]
+            };
+            ListItem::new(Line::from(match &r.kind {
+                ProjectRowKind::Project { open } => folder(*open, true),
+                ProjectRowKind::Directory { open } => folder(*open, false),
+                ProjectRowKind::Request { method } => {
+                    let m = match method.parse::<Method>() {
+                        Ok(m) => method_span(m),
+                        Err(_) => Span::raw(format!("{method:<6}")),
+                    };
+                    vec![indent, m, Span::raw(format!(" {}", r.name))]
+                }
+            }))
+        })
+        .collect();
+    (rows, Some(app.projects_sel))
 }
 
 pub(crate) fn stored_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) {

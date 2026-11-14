@@ -233,6 +233,7 @@ pub fn kind_at(url: Rect, at: Position) -> Option<Kind> {
     }
 }
 
+pub(crate) const PROJECTS_TAB_WIDTH: u16 = " Projects ".len() as u16;
 pub(crate) const HISTORY_TAB_WIDTH: u16 = " History ".len() as u16;
 
 /// Which tab title sits under column `x` of the tab row. Matches `Tabs` default padding
@@ -240,8 +241,9 @@ pub(crate) const HISTORY_TAB_WIDTH: u16 = " History ".len() as u16;
 pub fn tab_at(tabs: Rect, x: u16) -> Option<Tab> {
     let offset = x.checked_sub(tabs.x)?;
     match offset {
-        o if o < HISTORY_TAB_WIDTH => Some(Tab::History),
-        o if o == HISTORY_TAB_WIDTH => None, // divider
+        o if o < PROJECTS_TAB_WIDTH => Some(Tab::Projects),
+        o if o == PROJECTS_TAB_WIDTH => None, // divider
+        o if o < PROJECTS_TAB_WIDTH + 1 + HISTORY_TAB_WIDTH => Some(Tab::History),
         _ => None,
     }
 }

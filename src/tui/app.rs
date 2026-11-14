@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,6 +22,7 @@ use crate::client::{
     with_query,
 };
 use crate::history::{History, HistoryEntry, Outcome, Summary};
+use crate::model::{Directory, Project, to_client_request};
 use crate::project::{Loaded, Template};
 use crate::vars::{self, Vars};
 
@@ -42,8 +44,35 @@ pub const HISTORY_LIMIT: u32 = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
+    /// Projects stored in the database: project > directories > requests.
+    Projects,
     Stored,
     History,
+}
+
+/// One visible line of the Projects tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectRow {
+    pub depth: usize,
+    pub id: String,
+    pub name: String,
+    pub kind: ProjectRowKind,
+    /// Index into [`App::projects`].
+    pub project: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectRowKind {
+    Project {
+        open: bool,
+    },
+    Directory {
+        open: bool,
+    },
+    /// The HTTP verb.
+    Request {
+        method: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +213,7 @@ pub enum Msg {
     /// The result of introspecting the GraphQL endpoint at the URL.
     GraphqlLoaded(String, Result<GraphqlSchema, String>),
     History(Vec<Summary>),
+    Projects(Vec<Project>),
     Preview(Box<HistoryEntry>),
     /// A line of the connection trace of the request in flight.
     Trace(String),
@@ -317,6 +347,12 @@ pub struct App {
     pub focus: Focus,
     pub templates: Vec<StoredTemplate>,
     pub stored_sel: usize,
+    /// Projects of the Projects tab, as stored in the database.
+    pub projects: Vec<Project>,
+    /// Ids of the open projects and directories.
+    pub open_nodes: HashSet<String>,
+    /// Selected row of [`App::project_rows`].
+    pub projects_sel: usize,
     pub history: Vec<Summary>,
     pub history_sel: usize,
     /// Whether the editor builds an HTTP or a gRPC request.
@@ -450,10 +486,13 @@ impl App {
             .collect();
 
         let app = Self {
-            tab: Tab::History,
+            tab: Tab::Projects,
             focus: Focus::List,
             templates,
             stored_sel: 0,
+            projects: Vec::new(),
+            open_nodes: HashSet::new(),
+            projects_sel: 0,
             history: Vec::new(),
             history_sel: 0,
             kind: Kind::Http,
@@ -518,6 +557,7 @@ impl App {
         }
         app.log.push(Level::Info, "ready");
         app.refresh_history();
+        app.refresh_projects();
         app
     }
 
@@ -919,6 +959,98 @@ impl App {
         self.history.get(self.history_sel)
     }
 
+    /// The visible lines of the Projects tree: each project, and below an open one its
+    /// directories (nested) and requests.
+    pub fn project_rows(&self) -> Vec<ProjectRow> {
+        fn request_rows(
+            out: &mut Vec<ProjectRow>,
+            requests: &[crate::model::Request],
+            depth: usize,
+            project: usize,
+        ) {
+            for r in requests {
+                let method = r
+                    .api
+                    .as_rest()
+                    .map(|rest| rest.method.as_str().to_owned())
+                    .unwrap_or_default();
+                out.push(ProjectRow {
+                    depth,
+                    id: r.id.clone(),
+                    name: r.name.clone(),
+                    kind: ProjectRowKind::Request { method },
+                    project,
+                });
+            }
+        }
+        fn dir_rows(
+            out: &mut Vec<ProjectRow>,
+            open: &HashSet<String>,
+            dirs: &[Directory],
+            depth: usize,
+            project: usize,
+        ) {
+            for d in dirs {
+                let is_open = open.contains(&d.id);
+                out.push(ProjectRow {
+                    depth,
+                    id: d.id.clone(),
+                    name: d.name.clone(),
+                    kind: ProjectRowKind::Directory { open: is_open },
+                    project,
+                });
+                if is_open {
+                    dir_rows(out, open, &d.directories, depth + 1, project);
+                    request_rows(out, &d.requests, depth + 1, project);
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        for (pi, p) in self.projects.iter().enumerate() {
+            let is_open = self.open_nodes.contains(&p.id);
+            out.push(ProjectRow {
+                depth: 0,
+                id: p.id.clone(),
+                name: p.name.clone(),
+                kind: ProjectRowKind::Project { open: is_open },
+                project: pi,
+            });
+            if is_open {
+                dir_rows(&mut out, &self.open_nodes, &p.directories, 1, pi);
+                request_rows(&mut out, &p.requests, 1, pi);
+            }
+        }
+        out
+    }
+
+    /// The client request of the selected Projects row, if it is a request.
+    pub fn selected_project_request(&self) -> Option<Request> {
+        let row = self.project_rows().into_iter().nth(self.projects_sel)?;
+        if !matches!(row.kind, ProjectRowKind::Request { .. }) {
+            return None;
+        }
+        let project = self.projects.get(row.project)?;
+        let request = project
+            .all_requests()
+            .into_iter()
+            .find(|r| r.id == row.id)?;
+        Some(to_client_request(project, request))
+    }
+
+    /// Opens or closes the project or directory at row `row`.
+    fn toggle_project_row(&mut self, row: usize) {
+        let Some(r) = self.project_rows().into_iter().nth(row) else {
+            return;
+        };
+        if matches!(r.kind, ProjectRowKind::Request { .. }) {
+            return;
+        }
+        if !self.open_nodes.remove(&r.id) {
+            self.open_nodes.insert(r.id);
+        }
+    }
+
     pub fn selected_template(&self) -> Option<&StoredTemplate> {
         self.templates.get(self.stored_sel)
     }
@@ -933,6 +1065,15 @@ impl App {
                         return View {
                             request: (&entry.request).into(),
                             outcome: Some(&entry.outcome),
+                            previewing: true,
+                        };
+                    }
+                }
+                Tab::Projects => {
+                    if let Some(request) = self.selected_project_request() {
+                        return View {
+                            request: (&request).into(),
+                            outcome: self.live.as_ref(),
                             previewing: true,
                         };
                     }
@@ -1023,6 +1164,12 @@ impl App {
                 self.history = list;
                 self.history_sel = self.history_sel.min(self.history.len().saturating_sub(1));
                 self.request_preview();
+            }
+            Msg::Projects(list) => {
+                self.projects = list;
+                self.projects_sel = self
+                    .projects_sel
+                    .min(self.project_rows().len().saturating_sub(1));
             }
             Msg::Preview(entry) => {
                 if self.selected_summary().is_some_and(|s| s.id == entry.id) {
@@ -1978,6 +2125,18 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Enter => self.activate(),
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Left | KeyCode::Char('h')
+                if self.tab == Tab::Projects =>
+            {
+                let open = matches!(code, KeyCode::Right | KeyCode::Char('l'));
+                let row = self.projects_sel;
+                if let Some(r) = self.project_rows().into_iter().nth(row)
+                    && !matches!(r.kind, ProjectRowKind::Request { .. })
+                    && self.open_nodes.contains(&r.id) != open
+                {
+                    self.toggle_project_row(row);
+                }
+            }
             _ => {}
         }
     }
@@ -2373,6 +2532,12 @@ impl App {
     /// Clicking an item selects (and previews) it; clicking it again loads it.
     fn click_list(&mut self, y_in_list: u16, height: u16) {
         let item = match self.tab {
+            Tab::Projects => {
+                let rows = self.project_rows().len();
+                let selected_row = (rows > 0).then_some(self.projects_sel);
+                let row = y_in_list as usize + ui::list_offset(selected_row, height);
+                (row < rows).then_some(row)
+            }
             Tab::Stored => {
                 let rows = ui::stored_row_map(self);
                 let selected_row = rows.iter().position(|r| *r == Some(self.stored_sel));
@@ -2390,6 +2555,19 @@ impl App {
         };
 
         self.focus = Focus::List;
+        if self.tab == Tab::Projects {
+            let is_request = matches!(
+                self.project_rows().get(item).map(|r| &r.kind),
+                Some(ProjectRowKind::Request { .. })
+            );
+            if !is_request {
+                // A click on a project or directory opens or closes it.
+                self.select(item);
+                self.toggle_project_row(item);
+                self.last_click = None;
+                return;
+            }
+        }
         if self.last_click == Some((self.tab, item)) {
             self.last_click = None;
             self.select(item);
@@ -2402,6 +2580,7 @@ impl App {
 
     fn select(&mut self, item: usize) {
         match self.tab {
+            Tab::Projects => self.projects_sel = item,
             Tab::Stored => self.stored_sel = item,
             Tab::History => self.history_sel = item,
         }
@@ -2491,7 +2670,9 @@ impl App {
     }
 
     fn move_selection(&mut self, delta: isize) {
+        let project_len = self.project_rows().len();
         let (sel, len) = match self.tab {
+            Tab::Projects => (&mut self.projects_sel, project_len),
             Tab::Stored => (&mut self.stored_sel, self.templates.len()),
             Tab::History => (&mut self.history_sel, self.history.len()),
         };
@@ -2507,6 +2688,18 @@ impl App {
     /// Copies the selected entry into the editor so it can be modified and sent.
     fn activate(&mut self) {
         let request = match self.tab {
+            Tab::Projects => {
+                let row = self.projects_sel;
+                if self
+                    .project_rows()
+                    .get(row)
+                    .is_some_and(|r| !matches!(r.kind, ProjectRowKind::Request { .. }))
+                {
+                    self.toggle_project_row(row);
+                    return;
+                }
+                self.selected_project_request()
+            }
             Tab::Stored => self.selected_template().map(|t| t.template.to_request()),
             Tab::History => match (self.selected_summary(), &self.preview) {
                 (Some(s), Some(e)) if e.id == s.id => Some(e.request.clone()),
@@ -2956,6 +3149,17 @@ impl App {
                 self.live = Some(Outcome::Grpc(outcome));
             }
         }
+    }
+
+    pub fn refresh_projects(&self) {
+        let (store, tx) = (self.store.clone(), self.tx.clone());
+        tokio::spawn(async move {
+            let msg = match store.list_projects().await {
+                Ok(list) => Msg::Projects(list),
+                Err(e) => Msg::Failed(format!("could not read projects: {e}")),
+            };
+            let _ = tx.send(msg);
+        });
     }
 
     pub fn refresh_history(&self) {
