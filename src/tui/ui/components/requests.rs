@@ -82,7 +82,8 @@ pub(crate) fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
 
 pub(crate) fn project_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) {
     let green = Style::new().fg(Color::Green);
-    let gray = Style::new().fg(Color::DarkGray);
+    // light enough to read on the blue selection
+    let gray = Style::new().fg(Color::Gray);
     let rows = app
         .panel_rows()
         .into_iter()
