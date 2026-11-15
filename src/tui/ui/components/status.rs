@@ -22,7 +22,7 @@ pub const HELP_GRAPHQL: &str =
     "Ctrl+G kind | Ctrl+L schema | Ctrl+P operation | Ctrl+S send | Ctrl+T tabs | ? keys";
 
 pub const HELP_WS: &str =
-    "Ctrl+G kind | Ctrl+S connect or send | Ctrl+X close | Ctrl+N new | Ctrl+T headers | ? keys";
+    "Ctrl+G kind | Ctrl+S connect or send | Ctrl+X close | Ctrl+T headers | ? keys";
 
 pub(crate) fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let text = match &app.status {
