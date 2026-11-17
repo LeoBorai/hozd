@@ -40,7 +40,11 @@ fn reads_yaml_and_json_to_the_same_project() {
     )
     .unwrap();
     let json = dir.path().join("api.json");
-    std::fs::write(&json, serde_json::to_string(&read_document(&yaml).unwrap()).unwrap()).unwrap();
+    std::fs::write(
+        &json,
+        serde_json::to_string(&read_document(&yaml).unwrap()).unwrap(),
+    )
+    .unwrap();
     let a = hozd::model::import(&read_document(&yaml).unwrap()).unwrap();
     let b = hozd::model::import(&read_document(&json).unwrap()).unwrap();
     assert_eq!(a.name, "Pets");

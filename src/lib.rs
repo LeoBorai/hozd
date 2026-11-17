@@ -108,7 +108,11 @@ impl ImportArgs {
         if let Some(name) = &name {
             anyhow::ensure!(!name.trim().is_empty(), "the project name cannot be empty");
         }
-        Ok(Self { kind, path: path.into(), name })
+        Ok(Self {
+            kind,
+            path: path.into(),
+            name,
+        })
     }
 }
 
@@ -122,7 +126,11 @@ pub fn read_document(path: &std::path::Path) -> anyhow::Result<serde_json::Value
         .is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"));
     let json = || serde_json::from_str(&text).ok();
     let yaml = || serde_yaml_ng::from_str::<serde_json::Value>(&text).ok();
-    let doc = if yaml_first { yaml().or_else(json) } else { json().or_else(yaml) };
+    let doc = if yaml_first {
+        yaml().or_else(json)
+    } else {
+        json().or_else(yaml)
+    };
     doc.with_context(|| format!("{} is neither valid JSON nor YAML", path.display()))
 }
 
