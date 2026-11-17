@@ -3515,6 +3515,21 @@ fn create_project(app: &mut App, name: &str) {
     app.handle_key(key(KeyCode::Enter));
 }
 
+/// Ctrl+Shift+D / R, then types the default name and confirms it.
+fn create_named(app: &mut App, c: char) {
+    app.handle_key(ctrl_shift(c));
+    assert!(app.naming.is_some());
+    type_text(
+        app,
+        if c == 'd' {
+            "New directory"
+        } else {
+            "New request"
+        },
+    );
+    app.handle_key(key(KeyCode::Enter));
+}
+
 #[tokio::test]
 async fn creating_a_project_asks_for_a_name_then_enters_its_context() {
     let mut h = harness().await;
@@ -3553,6 +3568,25 @@ async fn creating_a_project_asks_for_a_name_then_enters_its_context() {
 }
 
 #[tokio::test]
+async fn naming_a_request_over_a_closed_directory_shows_the_input_inside_it() {
+    let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
+    create_project(&mut h.app, "Pets");
+    create_named(&mut h.app, 'd');
+    // close the directory, then step over it again
+    h.app.handle_key(key(KeyCode::Enter));
+    h.app.handle_key(key(KeyCode::Up));
+    h.app.handle_key(key(KeyCode::Down));
+    h.app.handle_key(ctrl_shift('r'));
+    let out = text(&render(&h.app, 120, 30));
+    assert!(out.contains("    + Request name \u{23ce}"), "{out}");
+    type_text(&mut h.app, "Get pet");
+    h.app.handle_key(key(KeyCode::Enter));
+    assert_eq!(h.app.projects[0].directories[0].requests.len(), 1);
+    assert_eq!(h.app.selected_project_row().unwrap().depth, 2);
+}
+
+#[tokio::test]
 async fn an_empty_name_is_not_accepted_and_escape_cancels() {
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
@@ -3568,15 +3602,18 @@ async fn shortcuts_create_and_focus_directories_and_requests() {
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
     h.app.handle_key(ctrl_shift('d'));
-    assert!(h.app.projects.is_empty(), "needs an open project");
+    assert!(
+        h.app.naming.is_none() && h.app.projects.is_empty(),
+        "needs an open project"
+    );
 
     create_project(&mut h.app, "Pets");
-    h.app.handle_key(ctrl_shift('D'));
+    create_named(&mut h.app, 'd');
     let sel = h.app.selected_project_row().unwrap();
     assert_eq!(sel.name, "New directory", "the new directory is selected");
 
     // a request made while the directory is selected goes inside it
-    h.app.handle_key(ctrl_shift('r'));
+    create_named(&mut h.app, 'r');
     let sel = h.app.selected_project_row().unwrap();
     assert_eq!(sel.name, "New request");
     assert_eq!(sel.depth, 2);
@@ -3585,7 +3622,7 @@ async fn shortcuts_create_and_focus_directories_and_requests() {
     // from the project line, requests land at the root
     h.app.handle_key(key(KeyCode::Up));
     h.app.handle_key(key(KeyCode::Up));
-    h.app.handle_key(ctrl_shift('r'));
+    create_named(&mut h.app, 'r');
     assert_eq!(h.app.projects[0].requests.len(), 1);
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -3604,6 +3641,9 @@ async fn create_rows_are_clickable() {
     h.app.handle_key(key(KeyCode::Enter));
     // rows: project, create directory, create request
     click(&mut h.app, a.list.x + 3, a.list.y + 2);
+    assert!(h.app.naming.is_some());
+    type_text(&mut h.app, "New request");
+    h.app.handle_key(key(KeyCode::Enter));
     assert_eq!(h.app.selected_project_row().unwrap().name, "New request");
 }
 
@@ -3614,7 +3654,7 @@ async fn editing_the_metadata_title_renames_the_item_in_the_tree() {
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
     create_project(&mut h.app, "Pets");
-    h.app.handle_key(ctrl_shift('r'));
+    create_named(&mut h.app, 'r');
     h.app.handle_key(key(KeyCode::Char('m')));
     assert_eq!(h.app.center_tab, CenterTab::Metadata);
 
@@ -3679,12 +3719,12 @@ async fn backspace_deletes_an_empty_directory_and_a_request_without_asking() {
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
     create_project(&mut h.app, "Pets");
-    h.app.handle_key(ctrl_shift('d'));
+    create_named(&mut h.app, 'd');
     h.app.handle_key(key(KeyCode::Backspace));
     assert!(h.app.confirm.is_none());
     assert!(h.app.projects[0].directories.is_empty());
 
-    h.app.handle_key(ctrl_shift('r'));
+    create_named(&mut h.app, 'r');
     assert_eq!(h.app.projects[0].requests.len(), 1);
     h.app.handle_key(key(KeyCode::Backspace));
     assert!(h.app.projects[0].requests.is_empty());
@@ -3700,8 +3740,8 @@ async fn a_directory_with_contents_asks_and_ok_deletes_it() {
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
     create_project(&mut h.app, "Pets");
-    h.app.handle_key(ctrl_shift('d'));
-    h.app.handle_key(ctrl_shift('r')); // inside the directory
+    create_named(&mut h.app, 'd');
+    create_named(&mut h.app, 'r'); // inside the directory
     h.app.handle_key(key(KeyCode::Up)); // back on the directory
     h.app.handle_key(key(KeyCode::Backspace));
 
@@ -3740,8 +3780,8 @@ async fn escape_closes_the_question_without_deleting() {
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
     create_project(&mut h.app, "Pets");
-    h.app.handle_key(ctrl_shift('d'));
-    h.app.handle_key(ctrl_shift('d')); // a directory inside a directory
+    create_named(&mut h.app, 'd');
+    create_named(&mut h.app, 'd'); // a directory inside a directory
     h.app.handle_key(key(KeyCode::Up));
     h.app.handle_key(key(KeyCode::Backspace));
     assert!(h.app.confirm.is_some());
@@ -3755,7 +3795,7 @@ async fn editing_a_loaded_project_request_updates_it_live_and_saves_on_leaving()
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
     create_project(&mut h.app, "Pets");
-    h.app.handle_key(ctrl_shift('r')); // selects "New request"
+    create_named(&mut h.app, 'r'); // selects "New request"
     h.app.handle_key(key(KeyCode::Enter)); // loads it into the editor
     assert_eq!(h.app.focus, Focus::Url);
 
@@ -3790,7 +3830,7 @@ async fn sending_saves_the_bound_request() {
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
     create_project(&mut h.app, "Pets");
-    h.app.handle_key(ctrl_shift('r'));
+    create_named(&mut h.app, 'r');
     h.app.handle_key(key(KeyCode::Enter));
     type_text(&mut h.app, "http://pets.test/a");
     h.app.handle_key(ctrl('s')); // send while still in the editor

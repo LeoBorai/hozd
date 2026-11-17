@@ -93,6 +93,14 @@ pub enum HistoryRow {
     Entry(usize),
 }
 
+/// What a name typed on a create row of the Projects list will create.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameKind {
+    Project,
+    Directory,
+    Request,
+}
+
 /// One line of the Projects list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PanelRow {
@@ -103,6 +111,10 @@ pub enum PanelRow {
     CreateDirectory,
     /// Inside a project only.
     CreateRequest,
+    /// Where the name of a new directory or request is typed: inside the target directory.
+    Naming {
+        depth: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -414,6 +426,10 @@ pub struct App {
     pub project_ctx: Option<String>,
     /// The name being typed for a new project, while the Projects list asks for one.
     pub naming: Option<TextArea<'static>>,
+    /// What the name being typed in `naming` is for.
+    pub naming_kind: NameKind,
+    /// The directory a directory or request being named goes into; `None` at the root.
+    naming_parent: Option<String>,
     /// Metadata tab editors, showing the tree line `meta_for`.
     pub meta_title: TextArea<'static>,
     pub meta_desc: TextArea<'static>,
@@ -586,6 +602,8 @@ impl App {
             bound_last: None,
             bound_dirty: false,
             naming: None,
+            naming_kind: NameKind::Project,
+            naming_parent: None,
             meta_title: single_line(""),
             meta_desc: TextArea::default(),
             meta_for: None,
@@ -1208,14 +1226,47 @@ impl App {
     /// projects. Inside one: its tree, then the create-directory and create-request
     /// rows; no other project can be created there.
     pub fn panel_rows(&self) -> Vec<PanelRow> {
-        let nodes = self.project_rows().into_iter().map(PanelRow::Node);
+        let rows = self.project_rows();
         if self.project_ctx_index().is_some() {
-            nodes
-                .chain([PanelRow::CreateDirectory, PanelRow::CreateRequest])
-                .collect()
+            let mut out: Vec<PanelRow> = Vec::new();
+            let mut naming_at = None;
+            if self.naming.is_some() && self.naming_kind != NameKind::Project {
+                // after the last line inside the target directory, else at the root's end
+                naming_at = Some(match &self.naming_parent {
+                    Some(id) => {
+                        rows.iter()
+                            .position(|r| &r.id == id)
+                            .map_or((rows.len(), 1), |i| {
+                                let d = rows[i].depth;
+                                let end = rows[i + 1..]
+                                    .iter()
+                                    .position(|r| r.depth <= d)
+                                    .map_or(rows.len(), |n| i + 1 + n);
+                                (end, d + 1)
+                            })
+                    }
+                    None => (rows.len(), 1),
+                });
+            }
+            let total = rows.len();
+            for (i, r) in rows.into_iter().enumerate() {
+                if let Some((at, depth)) = naming_at
+                    && at == i
+                {
+                    out.push(PanelRow::Naming { depth });
+                }
+                out.push(PanelRow::Node(r));
+            }
+            if let Some((at, depth)) = naming_at
+                && at == total
+            {
+                out.push(PanelRow::Naming { depth });
+            }
+            out.extend([PanelRow::CreateDirectory, PanelRow::CreateRequest]);
+            out
         } else {
             std::iter::once(PanelRow::CreateProject)
-                .chain(nodes)
+                .chain(rows.into_iter().map(PanelRow::Node))
                 .collect()
         }
     }
@@ -1262,9 +1313,9 @@ impl App {
     /// closes a directory.
     fn open_panel_row(&mut self, row: usize) {
         match self.panel_rows().into_iter().nth(row) {
-            Some(PanelRow::CreateProject) => self.naming = Some(single_line("")),
-            Some(PanelRow::CreateDirectory) => self.create_node(true),
-            Some(PanelRow::CreateRequest) => self.create_node(false),
+            Some(PanelRow::CreateProject) => self.start_naming(NameKind::Project),
+            Some(PanelRow::CreateDirectory) => self.start_naming(NameKind::Directory),
+            Some(PanelRow::CreateRequest) => self.start_naming(NameKind::Request),
             Some(PanelRow::Node(r)) => match r.kind {
                 ProjectRowKind::Project { .. } => {
                     self.last_node = None;
@@ -1283,7 +1334,7 @@ impl App {
                 }
                 ProjectRowKind::Request { .. } => {}
             },
-            None => {}
+            Some(PanelRow::Naming { .. }) | None => {}
         }
     }
 
@@ -1366,7 +1417,33 @@ impl App {
         }
     }
 
-    /// Keys typed while a new project's name is being entered.
+    /// Starts typing the name of a new project, directory or request.
+    fn start_naming(&mut self, kind: NameKind) {
+        if kind != NameKind::Project && self.project_ctx_index().is_none() {
+            self.notice = Some("open a project first".into());
+            return;
+        }
+        self.naming_kind = kind;
+        self.naming_parent = if kind == NameKind::Project {
+            None
+        } else {
+            self.target_parent()
+        };
+        if let Some(parent) = &self.naming_parent {
+            // the new entry shows inside the directory, so it must be open
+            self.open_nodes.insert(parent.clone());
+        }
+        self.naming = Some(single_line(""));
+        if let Some(i) = self.panel_rows().iter().position(|r| match kind {
+            NameKind::Project => matches!(r, PanelRow::CreateProject),
+            _ => matches!(r, PanelRow::Naming { .. }),
+        }) {
+            self.projects_sel = i;
+        }
+        self.focus = Focus::List;
+    }
+
+    /// Keys typed while a new project, directory or request name is being entered.
     fn naming_key(&mut self, key: KeyEvent) {
         let Some(name) = &mut self.naming else {
             return;
@@ -1379,7 +1456,12 @@ impl App {
             KeyCode::Enter => {
                 let text = name.lines().join(" ").trim().to_owned();
                 if !text.is_empty() {
-                    self.create_project(&text);
+                    match self.naming_kind {
+                        NameKind::Project => self.create_project(&text),
+                        NameKind::Directory => self.create_node(true, &text),
+                        NameKind::Request => self.create_node(false, &text),
+                    }
+                    self.naming = None;
                 }
             }
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down => {}
@@ -1414,20 +1496,20 @@ impl App {
     }
 
     /// Adds a directory or request to the open project and selects it.
-    fn create_node(&mut self, directory: bool) {
+    fn create_node(&mut self, directory: bool, name: &str) {
         let Some(pi) = self.project_ctx_index() else {
             self.notice = Some("open a project first".into());
             return;
         };
-        let parent = self.target_parent();
+        let parent = self.naming_parent.take();
         let id = if directory {
-            let dir = Directory::new("New directory");
+            let dir = Directory::new(name);
             let id = dir.id.clone();
             self.projects[pi].add_directory(parent.as_deref(), dir);
             id
         } else {
             let request = crate::model::Request::rest(
-                "New request",
+                name,
                 crate::model::RestRequest::new(crate::model::Method::Get, ""),
             );
             let id = request.id.clone();
@@ -1811,8 +1893,8 @@ impl App {
         {
             let shifted = key.modifiers.contains(KeyModifiers::SHIFT) || c.is_ascii_uppercase();
             match (c.to_ascii_lowercase(), shifted) {
-                ('r', true) => return self.create_node(false),
-                ('d', true) => return self.create_node(true),
+                ('r', true) => return self.start_naming(NameKind::Request),
+                ('d', true) => return self.start_naming(NameKind::Directory),
                 _ => {}
             }
         }
