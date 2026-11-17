@@ -458,9 +458,8 @@ async fn with_two_history_entries() -> Harness {
     h.app.refresh_history();
     pump(&mut h, |a| a.history.len() == 2).await;
     h.app.set_tab(Tab::History);
-    // rows: host, first, second (execution order); rest on the newest
-    h.app.handle_key(key(KeyCode::Char('j')));
-    assert_eq!(h.app.history_sel, 2);
+    // rows: host, second, first (newest first); the selection rests on the newest
+    assert_eq!(h.app.history_sel, 1);
     h
 }
 
@@ -472,7 +471,7 @@ async fn hovering_history_previews_request_and_response_without_sending() {
     assert_eq!(h.app.view().request.url, "http://x/second");
     assert!(matches!(h.app.view().outcome, Some(Outcome::Error(m)) if m == "boom"));
 
-    h.app.handle_key(key(KeyCode::Char('k')));
+    h.app.handle_key(key(KeyCode::Char('j')));
     pump(&mut h, |a| a.view().request.url == "http://x/first").await;
     assert!(matches!(h.app.view().outcome, Some(Outcome::Response(r)) if r.status == 200));
     let out = text(&render(&h.app, 120, 30));
@@ -594,12 +593,12 @@ async fn clicking_history_selects_then_second_click_loads() {
     let mut h = with_two_history_entries().await;
     let a = ui::areas(SCREEN);
 
-    click(&mut h.app, a.list.x + 3, a.list.y + 1); // second row = older entry
-    assert_eq!(h.app.history_sel, 1);
+    click(&mut h.app, a.list.x + 3, a.list.y + 2); // third row = older entry
+    assert_eq!(h.app.history_sel, 2);
     pump(&mut h, |a| a.view().request.url == "http://x/first").await;
     assert_eq!(h.app.focus, Focus::List, "first click only previews");
 
-    click(&mut h.app, a.list.x + 3, a.list.y + 1);
+    click(&mut h.app, a.list.x + 3, a.list.y + 2);
     assert_eq!(h.app.focus, Focus::Url);
     assert_eq!(h.app.editor_request().url, "http://x/first");
     assert!(h.fake.requests().is_empty(), "clicking never sends");
@@ -612,13 +611,13 @@ async fn clicking_empty_list_space_changes_nothing_and_the_response_box_takes_fo
     click(&mut h.app, a.list.x + 1, a.list.y + 10); // below the two rows
     assert_eq!(
         (h.app.history_sel, h.app.focus, h.app.tab),
-        (2, Focus::List, Tab::History)
+        (1, Focus::List, Tab::History)
     );
 
     click(&mut h.app, a.response_body.x + 1, a.response_body.y + 1);
     assert_eq!(
         (h.app.history_sel, h.app.focus, h.app.tab),
-        (2, Focus::Response, Tab::History)
+        (1, Focus::Response, Tab::History)
     );
     assert!(h.app.modal.is_none(), "one click only focuses");
 }
@@ -673,18 +672,18 @@ async fn long_history_list_clicks_hit_the_rows_that_are_drawn() {
     pump(&mut h, |a| a.history.len() == 40).await;
     h.app.set_tab(Tab::History);
     for _ in 0..39 {
-        h.app.handle_key(key(KeyCode::Char('j'))); // execution order: bottom = n39
+        h.app.handle_key(key(KeyCode::Char('j'))); // most recent first: bottom = n00
     }
     // host line + 40 requests
     assert_eq!(h.app.history_sel, 40);
 
     let a = ui::areas(SCREEN);
     let drawn = text(&render(&h.app, 120, 30));
-    // selection last: the top visible row is 41 - list height; row r is request n(r-1)
+    // selection last: the top visible row is 41 - list height; row r is request n(40 - r)
     let top = 41 - a.list.height as usize;
-    let top_url = format!("http://x/n{:02}", top - 1);
+    let top_url = format!("http://x/n{:02}", 40 - top);
     // rows show the URI, not the full URL
-    let (top_uri, above_uri) = (format!("/n{:02}", top - 1), format!("/n{:02}", top - 2));
+    let (top_uri, above_uri) = (format!("/n{:02}", 40 - top), format!("/n{:02}", 41 - top));
     assert!(
         drawn.contains(&top_uri) && !drawn.contains(&above_uri),
         "{drawn}"
@@ -772,12 +771,12 @@ async fn wheel_moves_list_selection_and_scrolls_response() {
         mouse(MouseEventKind::ScrollUp, a.list.x + 1, a.list.y),
         SCREEN,
     );
-    assert_eq!(h.app.history_sel, 1);
+    assert_eq!(h.app.history_sel, 0);
     h.app.handle_mouse(
         mouse(MouseEventKind::ScrollDown, a.list.x + 1, a.list.y),
         SCREEN,
     );
-    assert_eq!(h.app.history_sel, 2);
+    assert_eq!(h.app.history_sel, 1);
 
     h.app.handle_mouse(
         mouse(
@@ -814,7 +813,7 @@ fn hit_areas_match_the_layout() {
 async fn y_copies_the_pretty_response_body_without_sending() {
     let mut h = with_two_history_entries().await;
     pump(&mut h, |a| a.view().previewing).await;
-    h.app.handle_key(key(KeyCode::Char('k'))); // older entry: JSON response {"x":1}
+    h.app.handle_key(key(KeyCode::Char('j'))); // older entry: JSON response {"x":1}
     pump(&mut h, |a| a.view().request.url == "http://x/first").await;
 
     h.app.handle_key(key(KeyCode::Char('y')));
@@ -845,7 +844,7 @@ async fn copy_error_message_and_nothing_to_copy() {
 #[tokio::test]
 async fn right_click_on_response_body_copies() {
     let mut h = with_two_history_entries().await;
-    h.app.handle_key(key(KeyCode::Char('k')));
+    h.app.handle_key(key(KeyCode::Char('j')));
     pump(&mut h, |a| a.view().request.url == "http://x/first").await;
     let a = ui::areas(SCREEN);
     h.app.handle_mouse(
@@ -1417,7 +1416,7 @@ async fn clicking_outside_the_panel_closes_it() {
 async fn hovered_history_entry_can_be_opened_from_the_response_box() {
     let mut h = with_two_history_entries().await;
     pump(&mut h, |a| a.view().previewing).await;
-    h.app.handle_key(key(KeyCode::Char('k'))); // the older entry: JSON response
+    h.app.handle_key(key(KeyCode::Char('j'))); // the older entry: JSON response
     pump(&mut h, |a| a.view().request.url == "http://x/first").await;
 
     let a = ui::areas(SCREEN);
@@ -3515,6 +3514,21 @@ fn create_project(app: &mut App, name: &str) {
     app.handle_key(key(KeyCode::Enter));
 }
 
+/// Ctrl+Shift+D / R, then types the default name and confirms it.
+fn create_named(app: &mut App, c: char) {
+    app.handle_key(ctrl_shift(c));
+    assert!(app.naming.is_some());
+    type_text(
+        app,
+        if c == 'd' {
+            "New directory"
+        } else {
+            "New request"
+        },
+    );
+    app.handle_key(key(KeyCode::Enter));
+}
+
 #[tokio::test]
 async fn creating_a_project_asks_for_a_name_then_enters_its_context() {
     let mut h = harness().await;
@@ -3553,6 +3567,25 @@ async fn creating_a_project_asks_for_a_name_then_enters_its_context() {
 }
 
 #[tokio::test]
+async fn naming_a_request_over_a_closed_directory_shows_the_input_inside_it() {
+    let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
+    create_project(&mut h.app, "Pets");
+    create_named(&mut h.app, 'd');
+    // close the directory, then step over it again
+    h.app.handle_key(key(KeyCode::Enter));
+    h.app.handle_key(key(KeyCode::Up));
+    h.app.handle_key(key(KeyCode::Down));
+    h.app.handle_key(ctrl_shift('r'));
+    let out = text(&render(&h.app, 120, 30));
+    assert!(out.contains("    + Request name \u{23ce}"), "{out}");
+    type_text(&mut h.app, "Get pet");
+    h.app.handle_key(key(KeyCode::Enter));
+    assert_eq!(h.app.projects[0].directories[0].requests.len(), 1);
+    assert_eq!(h.app.selected_project_row().unwrap().depth, 2);
+}
+
+#[tokio::test]
 async fn an_empty_name_is_not_accepted_and_escape_cancels() {
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
@@ -3568,15 +3601,18 @@ async fn shortcuts_create_and_focus_directories_and_requests() {
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
     h.app.handle_key(ctrl_shift('d'));
-    assert!(h.app.projects.is_empty(), "needs an open project");
+    assert!(
+        h.app.naming.is_none() && h.app.projects.is_empty(),
+        "needs an open project"
+    );
 
     create_project(&mut h.app, "Pets");
-    h.app.handle_key(ctrl_shift('D'));
+    create_named(&mut h.app, 'd');
     let sel = h.app.selected_project_row().unwrap();
     assert_eq!(sel.name, "New directory", "the new directory is selected");
 
     // a request made while the directory is selected goes inside it
-    h.app.handle_key(ctrl_shift('r'));
+    create_named(&mut h.app, 'r');
     let sel = h.app.selected_project_row().unwrap();
     assert_eq!(sel.name, "New request");
     assert_eq!(sel.depth, 2);
@@ -3585,7 +3621,7 @@ async fn shortcuts_create_and_focus_directories_and_requests() {
     // from the project line, requests land at the root
     h.app.handle_key(key(KeyCode::Up));
     h.app.handle_key(key(KeyCode::Up));
-    h.app.handle_key(ctrl_shift('r'));
+    create_named(&mut h.app, 'r');
     assert_eq!(h.app.projects[0].requests.len(), 1);
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -3604,6 +3640,9 @@ async fn create_rows_are_clickable() {
     h.app.handle_key(key(KeyCode::Enter));
     // rows: project, create directory, create request
     click(&mut h.app, a.list.x + 3, a.list.y + 2);
+    assert!(h.app.naming.is_some());
+    type_text(&mut h.app, "New request");
+    h.app.handle_key(key(KeyCode::Enter));
     assert_eq!(h.app.selected_project_row().unwrap().name, "New request");
 }
 
@@ -3614,7 +3653,7 @@ async fn editing_the_metadata_title_renames_the_item_in_the_tree() {
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
     create_project(&mut h.app, "Pets");
-    h.app.handle_key(ctrl_shift('r'));
+    create_named(&mut h.app, 'r');
     h.app.handle_key(key(KeyCode::Char('m')));
     assert_eq!(h.app.center_tab, CenterTab::Metadata);
 
@@ -3679,12 +3718,12 @@ async fn backspace_deletes_an_empty_directory_and_a_request_without_asking() {
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
     create_project(&mut h.app, "Pets");
-    h.app.handle_key(ctrl_shift('d'));
+    create_named(&mut h.app, 'd');
     h.app.handle_key(key(KeyCode::Backspace));
     assert!(h.app.confirm.is_none());
     assert!(h.app.projects[0].directories.is_empty());
 
-    h.app.handle_key(ctrl_shift('r'));
+    create_named(&mut h.app, 'r');
     assert_eq!(h.app.projects[0].requests.len(), 1);
     h.app.handle_key(key(KeyCode::Backspace));
     assert!(h.app.projects[0].requests.is_empty());
@@ -3700,8 +3739,8 @@ async fn a_directory_with_contents_asks_and_ok_deletes_it() {
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
     create_project(&mut h.app, "Pets");
-    h.app.handle_key(ctrl_shift('d'));
-    h.app.handle_key(ctrl_shift('r')); // inside the directory
+    create_named(&mut h.app, 'd');
+    create_named(&mut h.app, 'r'); // inside the directory
     h.app.handle_key(key(KeyCode::Up)); // back on the directory
     h.app.handle_key(key(KeyCode::Backspace));
 
@@ -3740,8 +3779,8 @@ async fn escape_closes_the_question_without_deleting() {
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
     create_project(&mut h.app, "Pets");
-    h.app.handle_key(ctrl_shift('d'));
-    h.app.handle_key(ctrl_shift('d')); // a directory inside a directory
+    create_named(&mut h.app, 'd');
+    create_named(&mut h.app, 'd'); // a directory inside a directory
     h.app.handle_key(key(KeyCode::Up));
     h.app.handle_key(key(KeyCode::Backspace));
     assert!(h.app.confirm.is_some());
@@ -3755,7 +3794,7 @@ async fn editing_a_loaded_project_request_updates_it_live_and_saves_on_leaving()
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
     create_project(&mut h.app, "Pets");
-    h.app.handle_key(ctrl_shift('r')); // selects "New request"
+    create_named(&mut h.app, 'r'); // selects "New request"
     h.app.handle_key(key(KeyCode::Enter)); // loads it into the editor
     assert_eq!(h.app.focus, Focus::Url);
 
@@ -3790,7 +3829,7 @@ async fn sending_saves_the_bound_request() {
     let mut h = harness().await;
     h.app.set_tab(Tab::Projects);
     create_project(&mut h.app, "Pets");
-    h.app.handle_key(ctrl_shift('r'));
+    create_named(&mut h.app, 'r');
     h.app.handle_key(key(KeyCode::Enter));
     type_text(&mut h.app, "http://pets.test/a");
     h.app.handle_key(ctrl('s')); // send while still in the editor
@@ -3808,7 +3847,7 @@ async fn sending_saves_the_bound_request() {
 }
 
 #[tokio::test]
-async fn history_groups_by_host_in_execution_order_and_collapses() {
+async fn history_groups_by_host_most_recent_first_and_collapses() {
     let mut h = harness().await;
     for url in [
         "http://a.dev:80/one",
@@ -3832,11 +3871,11 @@ async fn history_groups_by_host_in_execution_order_and_collapses() {
             .unwrap_or_else(|| panic!("{needle}: {drawn}"))
     };
     assert!(
-        at("a.dev:80") < at("/one") && at("/one") < at("/three"),
+        at("a.dev:80") < at("/three") && at("/three") < at("/one"),
         "{drawn}"
     );
     assert!(
-        at("/three") < at("b.dev") && at("b.dev") < at("/two?x=1"),
+        at("/one") < at("b.dev") && at("b.dev") < at("/two?x=1"),
         "{drawn}"
     );
     assert!(

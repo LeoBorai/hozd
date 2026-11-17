@@ -10,7 +10,7 @@ use crate::client::{Kind, Method, status_name};
 use crate::project::TemplateKind;
 
 use crate::history::Summary;
-use crate::tui::app::{App, Focus, HistoryRow, PanelRow, ProjectRowKind, Tab};
+use crate::tui::app::{App, Focus, HistoryRow, NameKind, PanelRow, ProjectRowKind, Tab};
 
 use super::super::layout::*;
 use super::*;
@@ -67,13 +67,43 @@ pub(crate) fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
     );
     if let (Tab::Projects, Some(name)) = (app.tab, &app.naming)
         && focused
-        && selected_row.is_some_and(|r| r == 0)
+        && let Some(sel) = selected_row
     {
-        // the name is typed on the first row, after the two-column "+ " marker
+        // the name is typed on the create row, after the two-column "+ " marker
         let col = name.cursor().1 as u16;
-        let x = (list.x + 2 + col).min(list.right().saturating_sub(1));
-        frame.set_cursor_position(ratatui::layout::Position::new(x, list.y));
+        let depth = match app.panel_rows().get(sel) {
+            Some(PanelRow::Naming { depth }) => *depth as u16 * 2,
+            _ => 0,
+        };
+        let x = (list.x + 2 + depth + col).min(list.right().saturating_sub(1));
+        let y = list.y + sel.saturating_sub(state.offset()) as u16;
+        frame.set_cursor_position(ratatui::layout::Position::new(x, y));
     }
+}
+
+/// The row a name is typed on: `+ name ⏎`, with a soft placeholder while empty.
+fn naming_line(app: &App, kind: NameKind, indent: usize) -> Option<Line<'static>> {
+    let name = app.naming.as_ref().filter(|_| app.naming_kind == kind)?;
+    let typed = name.lines().join(" ");
+    let soft = Style::new().fg(Color::DarkGray);
+    let mut spans = vec![
+        Span::raw("  ".repeat(indent)),
+        Span::styled("+ ", Style::new().fg(Color::Green)),
+    ];
+    if typed.is_empty() {
+        spans.push(Span::styled(
+            match kind {
+                NameKind::Project => "Project name",
+                NameKind::Directory => "Directory name",
+                NameKind::Request => "Request name",
+            },
+            soft,
+        ));
+    } else {
+        spans.push(Span::raw(typed));
+    }
+    spans.push(Span::styled(" \u{23ce}", Style::new().fg(Color::Gray)));
+    Some(Line::from(spans))
 }
 
 pub(crate) fn project_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>) {
@@ -86,12 +116,8 @@ pub(crate) fn project_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>)
         .map(|row| -> Line<'static> {
             let r = match row {
                 PanelRow::CreateProject => {
-                    return match &app.naming {
-                        Some(name) => Line::from(vec![
-                            Span::styled("+ ", green),
-                            Span::raw(name.lines().join(" ")),
-                            Span::styled(" \u{23ce}", gray),
-                        ]),
+                    return match naming_line(app, NameKind::Project, 0) {
+                        Some(line) => line,
                         None => Line::styled("+ Create project", green),
                     };
                 }
@@ -106,6 +132,9 @@ pub(crate) fn project_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>)
                         Span::styled("+ Create request", green),
                         Span::styled("  Ctrl+Shift+R", gray),
                     ]);
+                }
+                PanelRow::Naming { depth } => {
+                    return naming_line(app, app.naming_kind, depth).unwrap_or_default();
                 }
                 PanelRow::Node(r) => r,
             };
