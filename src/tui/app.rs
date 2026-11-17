@@ -1103,12 +1103,12 @@ impl App {
         }
     }
 
-    /// The History list: requests grouped by host, in order of execution. Groups
-    /// come in the order of their first request; a closed group shows only its line.
+    /// The History list: requests grouped by host, most recent first. Groups come in
+    /// the order of their latest request; a closed group shows only its line.
     pub fn history_rows(&self) -> Vec<HistoryRow> {
         // `history` is newest first
         let mut groups: Vec<(&str, Vec<usize>)> = Vec::new();
-        for (i, s) in self.history.iter().enumerate().rev() {
+        for (i, s) in self.history.iter().enumerate() {
             let host = s.host();
             match groups.iter_mut().find(|(h, _)| *h == host) {
                 Some((_, items)) => items.push(i),
