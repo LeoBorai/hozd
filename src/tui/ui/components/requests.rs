@@ -165,11 +165,20 @@ pub(crate) fn project_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>)
                         Ok(m) => method_span(m),
                         Err(_) => Span::raw(format!("{method:<6}")),
                     };
+                    let active = app.active_request_id() == Some(r.id.as_str());
+                    let name_style = if active {
+                        Style::new().fg(Color::Green).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::new()
+                    };
                     vec![
                         indent,
-                        Span::styled("\u{269b} ", Style::new().fg(Color::Yellow)),
+                        Span::styled(
+                            if active { "\u{25cf} " } else { "\u{269b} " },
+                            Style::new().fg(if active { Color::Green } else { Color::Yellow }),
+                        ),
                         m,
-                        Span::raw(format!(" {name}")),
+                        Span::styled(format!(" {name}"), name_style),
                     ]
                 }
             })
@@ -244,7 +253,12 @@ pub(crate) fn history_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>)
         .into_iter()
         .map(|row| {
             let line = match row {
-                HistoryRow::Host { host, open } => Line::from(vec![
+                HistoryRow::Day { day, open } => Line::from(vec![
+                    Span::raw(if open { "\u{25bc} " } else { "\u{25b6} " }),
+                    Span::styled(day, Style::new().add_modifier(Modifier::BOLD)),
+                ]),
+                HistoryRow::Host { host, open, .. } => Line::from(vec![
+                    Span::raw("  "),
                     Span::raw(if open { "\u{25bc} " } else { "\u{25b6} " }),
                     Span::styled(
                         host,
@@ -253,7 +267,11 @@ pub(crate) fn history_rows(app: &App) -> (Vec<ListItem<'static>>, Option<usize>)
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                     ),
                 ]),
-                HistoryRow::Entry(i) => entry_line(&app.history[i]),
+                HistoryRow::Entry(i) => {
+                    let mut line = entry_line(&app.history[i]);
+                    line.spans.insert(0, Span::raw("    "));
+                    line
+                }
             };
             ListItem::new(line)
         })

@@ -119,9 +119,10 @@ async fn reflect_pick_stream_cancel_and_replay_from_history() {
     app.url = TextArea::default();
     app.body = TextArea::default();
     app.selected_method = None;
-    // History is grouped by host, most recent first: row 0 is the host, row 1 the
-    // cancelled call, row 2 the finished one.
+    // History is grouped by day, then host, most recent first: row 0 is the day, row 1
+    // the host, row 2 the cancelled call, row 3 the finished one.
     app.handle_key(key(KeyCode::Up));
+    app.handle_key(key(KeyCode::Down));
     app.handle_key(key(KeyCode::Down));
     app.handle_key(key(KeyCode::Down));
     wait(&mut app, &mut rx, "the preview", |a| {

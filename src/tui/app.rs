@@ -87,8 +87,14 @@ pub struct ProjectRow {
 /// A line of the History list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HistoryRow {
-    /// A host group's header line.
-    Host { host: String, open: bool },
+    /// A day's header line, `YYYY-MM-DD`.
+    Day { day: String, open: bool },
+    /// A host group's header line, inside a day.
+    Host {
+        day: String,
+        host: String,
+        open: bool,
+    },
     /// A request, as an index into [`App::history`].
     Entry(usize),
 }
@@ -1177,42 +1183,65 @@ impl App {
     pub fn selected_summary(&self) -> Option<&Summary> {
         match self.history_rows().get(self.history_sel)? {
             HistoryRow::Entry(i) => self.history.get(*i),
-            HistoryRow::Host { .. } => None,
+            HistoryRow::Day { .. } | HistoryRow::Host { .. } => None,
         }
     }
 
-    /// The History list: requests grouped by host, most recent first. Groups come in
-    /// the order of their latest request; a closed group shows only its line.
+    /// The History list: requests grouped by day, then by host, most recent first. Days
+    /// and the hosts in them come in the order of their latest request; a closed group
+    /// shows only its line.
     pub fn history_rows(&self) -> Vec<HistoryRow> {
         // `history` is newest first
-        let mut groups: Vec<(&str, Vec<usize>)> = Vec::new();
+        type Hosts<'a> = Vec<(&'a str, Vec<usize>)>;
+        let mut days: Vec<(&str, Hosts)> = Vec::new();
         for (i, s) in self.history.iter().enumerate() {
-            let host = s.host();
-            match groups.iter_mut().find(|(h, _)| *h == host) {
+            let at = match days.iter().position(|(d, _)| *d == s.day) {
+                Some(at) => at,
+                None => {
+                    days.push((&s.day, Vec::new()));
+                    days.len() - 1
+                }
+            };
+            let hosts = &mut days[at].1;
+            match hosts.iter_mut().find(|(h, _)| *h == s.host()) {
                 Some((_, items)) => items.push(i),
-                None => groups.push((host, vec![i])),
+                None => hosts.push((s.host(), vec![i])),
             }
         }
         let mut out = Vec::new();
-        for (host, items) in groups {
-            let open = !self.history_closed.contains(host);
-            out.push(HistoryRow::Host {
-                host: host.to_owned(),
-                open,
+        for (day, hosts) in days {
+            let day_open = !self.history_closed.contains(day);
+            out.push(HistoryRow::Day {
+                day: day.to_owned(),
+                open: day_open,
             });
-            if open {
-                out.extend(items.into_iter().map(HistoryRow::Entry));
+            if !day_open {
+                continue;
+            }
+            for (host, items) in hosts {
+                let open = !self.history_closed.contains(&history_group_key(day, host));
+                out.push(HistoryRow::Host {
+                    day: day.to_owned(),
+                    host: host.to_owned(),
+                    open,
+                });
+                if open {
+                    out.extend(items.into_iter().map(HistoryRow::Entry));
+                }
             }
         }
         out
     }
 
-    /// Opens or closes the host group on History row `row`.
-    fn toggle_history_host(&mut self, row: usize) {
-        if let Some(HistoryRow::Host { host, .. }) = self.history_rows().into_iter().nth(row)
-            && !self.history_closed.remove(&host)
-        {
-            self.history_closed.insert(host);
+    /// Opens or closes the day or host group on History row `row`.
+    fn toggle_history_group(&mut self, row: usize) {
+        let key = match self.history_rows().into_iter().nth(row) {
+            Some(HistoryRow::Day { day, .. }) => day,
+            Some(HistoryRow::Host { day, host, .. }) => history_group_key(&day, &host),
+            _ => return,
+        };
+        if !self.history_closed.remove(&key) {
+            self.history_closed.insert(key);
         }
     }
 
@@ -1360,7 +1389,32 @@ impl App {
             .all_requests()
             .into_iter()
             .find(|r| r.id == row.id)?;
-        Some(to_client_request(project, request))
+        let mut request = to_client_request(project, request);
+        // a JSON document opens in the JSON fields when it has fields to edit
+        if let Request::Http(http) = &mut request
+            && let Some(Body::JsonRaw(text)) = &http.body
+            && let Some(value) = JsonValue::parse(text)
+                .ok()
+                .filter(|v| JsonEditor::from_value(v).is_some())
+        {
+            http.body = Some(Body::Json(value));
+        }
+        Some(request)
+    }
+
+    /// Id of the project request open in the editor.
+    pub fn active_request_id(&self) -> Option<&str> {
+        self.bound.as_deref()
+    }
+
+    /// How many metadata fields the selected project line has to read: 1 when it has a
+    /// description.
+    pub fn metadata_count(&self) -> usize {
+        self.selected_project_row().is_some_and(|r| {
+            r.description
+                .as_deref()
+                .is_some_and(|d| !d.trim().is_empty())
+        }) as usize
     }
 
     /// The center tab to show: `Some` only while the Projects tab is showing.
@@ -1860,9 +1914,15 @@ impl App {
                 self.history_sel = self
                     .history_sel
                     .min(self.history_rows().len().saturating_sub(1));
-                if self.history_sel == 0 && self.history_rows().len() > 1 {
-                    // rest on the first request, not on its host line
-                    self.history_sel = 1;
+                if self.history_sel == 0 {
+                    // rest on the first request, not on its day or host line
+                    if let Some(first) = self
+                        .history_rows()
+                        .iter()
+                        .position(|r| matches!(r, HistoryRow::Entry(_)))
+                    {
+                        self.history_sel = first;
+                    }
                 }
                 self.request_preview();
             }
@@ -3102,7 +3162,7 @@ impl App {
             return self.open_log();
         }
         if areas.center_tabs.contains(at) {
-            if let Some(tab) = ui::center_tab_at(areas.center_tabs, at.x) {
+            if let Some(tab) = ui::center_tab_at(areas.center_tabs, at.x, self.metadata_count()) {
                 self.set_center_tab(tab);
             }
         } else if areas.meta_title.contains(at) {
@@ -3329,11 +3389,14 @@ impl App {
 
         self.focus = Focus::List;
         if self.tab == Tab::History
-            && matches!(self.history_rows().get(item), Some(HistoryRow::Host { .. }))
+            && matches!(
+                self.history_rows().get(item),
+                Some(HistoryRow::Day { .. } | HistoryRow::Host { .. })
+            )
         {
-            // One click opens or closes a host group.
+            // One click opens or closes a day or host group.
             self.select(item);
-            self.toggle_history_host(item);
+            self.toggle_history_group(item);
             self.last_click = None;
             return;
         }
@@ -3492,13 +3555,23 @@ impl App {
                     return;
                 }
                 bind = self.selected_project_row().map(|r| r.id);
-                self.selected_project_request()
+                let mut request = self.selected_project_request();
+                // the body type picked for this request since it was opened stays
+                if bind.is_some()
+                    && bind == self.bound
+                    && self.body_kind == BodyKind::JsonRaw
+                    && let Some(Request::Http(http)) = &mut request
+                    && let Some(Body::Json(value)) = &http.body
+                {
+                    http.body = Some(Body::JsonRaw(value.to_json_pretty()));
+                }
+                request
             }
             Tab::Stored => self.selected_template().map(|t| t.template.to_request()),
             Tab::History => match (self.selected_summary(), &self.preview) {
                 (Some(s), Some(e)) if e.id == s.id => Some(e.request.clone()),
                 (None, _) => {
-                    self.toggle_history_host(self.history_sel);
+                    self.toggle_history_group(self.history_sel);
                     None
                 }
                 _ => None,
@@ -4131,4 +4204,10 @@ fn open_in_browser(url: &str) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
+}
+
+/// The key of a host group of a day in [`App::history_closed`]; a day's own key is the
+/// date alone.
+fn history_group_key(day: &str, host: &str) -> String {
+    format!("{day} {host}")
 }

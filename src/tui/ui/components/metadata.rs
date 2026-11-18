@@ -36,19 +36,22 @@ pub(crate) fn draw_center_tabs(frame: &mut Frame, app: &App, area: Rect) {
         label_area,
     );
     frame.render_widget(
-        Tabs::new(["Request", "Metadata"])
-            .select(selected)
-            .style(if focused {
-                Style::new().fg(Color::Green)
-            } else {
-                Style::new()
-            })
-            .highlight_style(
-                Style::new()
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-                    .fg(Color::Yellow),
-            )
-            .divider("|"),
+        Tabs::new([
+            "Request".to_owned(),
+            super::super::layout::metadata_tab_title(app.metadata_count()),
+        ])
+        .select(selected)
+        .style(if focused {
+            Style::new().fg(Color::Green)
+        } else {
+            Style::new()
+        })
+        .highlight_style(
+            Style::new()
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                .fg(Color::Yellow),
+        )
+        .divider("|"),
         tabs_area,
     );
 }
