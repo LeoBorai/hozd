@@ -2,9 +2,9 @@ use std::path::Path;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use sqlx::SqlitePool;
 use sqlx::migrate::{MigrateError, Migrator};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::{Row as _, SqlitePool};
 
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +53,8 @@ pub struct Summary {
     pub url: String,
     /// The HTTP status, or the gRPC status code; `None` when nothing was received.
     pub status: Option<u16>,
+    /// The local date it was sent on, `YYYY-MM-DD`.
+    pub day: String,
 }
 
 impl Summary {
@@ -203,21 +205,28 @@ impl History {
     /// Newest first.
     pub async fn list(&self, limit: u32) -> Result<Vec<Summary>, HistoryError> {
         let limit = i64::from(limit);
-        let rows = sqlx::query!(
-            r#"SELECT id as "id!", kind, method, url, status FROM history ORDER BY id DESC LIMIT ?"#,
-            limit
+        // the day is cut by SQLite in the local time zone
+        let rows = sqlx::query(
+            "SELECT id, kind, method, url, status,
+                    date(created_at_ms / 1000, 'unixepoch', 'localtime') AS day
+             FROM history ORDER BY id DESC LIMIT ?",
         )
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 
         rows.into_iter()
             .map(|r| {
+                let id: i64 = r.try_get("id")?;
+                let kind: String = r.try_get("kind")?;
+                let status: Option<i64> = r.try_get("status")?;
                 Ok(Summary {
-                    id: r.id,
-                    kind: parse_kind(r.id, &r.kind)?,
-                    method: r.method,
-                    url: r.url,
-                    status: r.status.map(|s| s as u16),
+                    id,
+                    kind: parse_kind(id, &kind)?,
+                    method: r.try_get("method")?,
+                    url: r.try_get("url")?,
+                    status: status.map(|s| s as u16),
+                    day: r.try_get::<Option<String>, _>("day")?.unwrap_or_default(),
                 })
             })
             .collect()

@@ -87,8 +87,14 @@ pub struct ProjectRow {
 /// A line of the History list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HistoryRow {
-    /// A host group's header line.
-    Host { host: String, open: bool },
+    /// A day's header line, `YYYY-MM-DD`.
+    Day { day: String, open: bool },
+    /// A host group's header line, inside a day.
+    Host {
+        day: String,
+        host: String,
+        open: bool,
+    },
     /// A request, as an index into [`App::history`].
     Entry(usize),
 }
@@ -134,6 +140,8 @@ pub enum ProjectRowKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     List,
+    /// The Request / Metadata tab row over the center panel.
+    Center,
     /// Metadata tab: the title box.
     MetaTitle,
     /// Metadata tab: the description box.
@@ -156,6 +164,8 @@ pub enum Focus {
     /// The Variables panel: the captures, one row each (variable name, path into the
     /// response).
     Captures,
+    /// The Logs panel; `Enter` opens the log.
+    Logs,
 }
 
 /// What the left column's lower panel shows.
@@ -1051,11 +1061,16 @@ impl App {
     /// Panels in display order; panel `n` of the UI is entry `n - 1`.
     pub fn panels(&self) -> Vec<Focus> {
         if self.center_tab() == Some(CenterTab::Metadata) {
-            return vec![Focus::List, Focus::MetaTitle, Focus::MetaDescription];
+            return vec![
+                Focus::List,
+                Focus::Center,
+                Focus::MetaTitle,
+                Focus::MetaDescription,
+            ];
         }
         let mut panels = vec![Focus::List];
-        if self.left_tab == LeftTab::Variables {
-            panels.push(Focus::Captures);
+        if self.center_tab().is_some() {
+            panels.push(Focus::Center);
         }
         panels.push(Focus::Url);
         match self.kind {
@@ -1063,8 +1078,77 @@ impl App {
             Kind::Graphql => panels.push(Focus::Method),
             _ => {}
         }
-        panels.extend([self.editor_focus(), Focus::Response]);
+        panels.extend([self.editor_focus(), Focus::Response, self.left_focus()]);
         panels
+    }
+
+    /// `Tab` / `Shift+Tab`: focus the next or previous panel in display order, skipping
+    /// the center tab row.
+    fn cycle_panel(&mut self, delta: isize) {
+        let panels = self.panels();
+        let n = panels.len() as isize;
+        let mut i = panels.iter().position(|p| *p == self.focus).unwrap_or(0) as isize;
+        // the tab row is reached by its number or by `[` / `]`, not by Tab
+        loop {
+            i = (i + delta).rem_euclid(n);
+            if panels[i as usize] != Focus::Center {
+                break;
+            }
+        }
+        self.set_focus(panels[i as usize]);
+    }
+
+    /// The focus value of the left column's lower panel as it shows now.
+    pub fn left_focus(&self) -> Focus {
+        match self.left_tab {
+            LeftTab::Logs => Focus::Logs,
+            LeftTab::Variables => Focus::Captures,
+        }
+    }
+
+    /// `[` and `]`: moves to the previous or next tab of the focused panel.
+    fn step_tab(&mut self, delta: isize) {
+        fn step<T: Copy + PartialEq>(items: &[T], cur: T, delta: isize) -> T {
+            let i = items.iter().position(|t| *t == cur).unwrap_or(0) as isize;
+            items[(i + delta).rem_euclid(items.len() as isize) as usize]
+        }
+        match self.focus {
+            Focus::List => {
+                let tab = step(&[Tab::Projects, Tab::History], self.tab, delta);
+                self.set_tab(tab);
+            }
+            Focus::Logs | Focus::Captures => {
+                let tab = step(&[LeftTab::Logs, LeftTab::Variables], self.left_tab, delta);
+                if tab != self.left_tab {
+                    self.toggle_variables_panel();
+                }
+            }
+            Focus::Center | Focus::MetaTitle | Focus::MetaDescription => {
+                let tab = step(
+                    &[CenterTab::Request, CenterTab::Metadata],
+                    self.center_tab,
+                    delta,
+                );
+                self.set_center_tab(tab);
+            }
+            Focus::Body | Focus::Variables | Focus::Headers | Focus::Params | Focus::Auth => {
+                let tabs: &[RequestTab] = match self.kind {
+                    Kind::Graphql => {
+                        &[RequestTab::Body, RequestTab::Variables, RequestTab::Headers]
+                    }
+                    Kind::Http => &[
+                        RequestTab::Body,
+                        RequestTab::Headers,
+                        RequestTab::Params,
+                        RequestTab::Auth,
+                    ],
+                    _ => &[RequestTab::Body, RequestTab::Headers],
+                };
+                let tab = step(tabs, self.request_tab, delta);
+                self.set_request_tab(tab);
+            }
+            _ => {}
+        }
     }
 
     pub fn set_request_tab(&mut self, tab: RequestTab) {
@@ -1099,42 +1183,65 @@ impl App {
     pub fn selected_summary(&self) -> Option<&Summary> {
         match self.history_rows().get(self.history_sel)? {
             HistoryRow::Entry(i) => self.history.get(*i),
-            HistoryRow::Host { .. } => None,
+            HistoryRow::Day { .. } | HistoryRow::Host { .. } => None,
         }
     }
 
-    /// The History list: requests grouped by host, most recent first. Groups come in
-    /// the order of their latest request; a closed group shows only its line.
+    /// The History list: requests grouped by day, then by host, most recent first. Days
+    /// and the hosts in them come in the order of their latest request; a closed group
+    /// shows only its line.
     pub fn history_rows(&self) -> Vec<HistoryRow> {
         // `history` is newest first
-        let mut groups: Vec<(&str, Vec<usize>)> = Vec::new();
+        type Hosts<'a> = Vec<(&'a str, Vec<usize>)>;
+        let mut days: Vec<(&str, Hosts)> = Vec::new();
         for (i, s) in self.history.iter().enumerate() {
-            let host = s.host();
-            match groups.iter_mut().find(|(h, _)| *h == host) {
+            let at = match days.iter().position(|(d, _)| *d == s.day) {
+                Some(at) => at,
+                None => {
+                    days.push((&s.day, Vec::new()));
+                    days.len() - 1
+                }
+            };
+            let hosts = &mut days[at].1;
+            match hosts.iter_mut().find(|(h, _)| *h == s.host()) {
                 Some((_, items)) => items.push(i),
-                None => groups.push((host, vec![i])),
+                None => hosts.push((s.host(), vec![i])),
             }
         }
         let mut out = Vec::new();
-        for (host, items) in groups {
-            let open = !self.history_closed.contains(host);
-            out.push(HistoryRow::Host {
-                host: host.to_owned(),
-                open,
+        for (day, hosts) in days {
+            let day_open = !self.history_closed.contains(day);
+            out.push(HistoryRow::Day {
+                day: day.to_owned(),
+                open: day_open,
             });
-            if open {
-                out.extend(items.into_iter().map(HistoryRow::Entry));
+            if !day_open {
+                continue;
+            }
+            for (host, items) in hosts {
+                let open = !self.history_closed.contains(&history_group_key(day, host));
+                out.push(HistoryRow::Host {
+                    day: day.to_owned(),
+                    host: host.to_owned(),
+                    open,
+                });
+                if open {
+                    out.extend(items.into_iter().map(HistoryRow::Entry));
+                }
             }
         }
         out
     }
 
-    /// Opens or closes the host group on History row `row`.
-    fn toggle_history_host(&mut self, row: usize) {
-        if let Some(HistoryRow::Host { host, .. }) = self.history_rows().into_iter().nth(row)
-            && !self.history_closed.remove(&host)
-        {
-            self.history_closed.insert(host);
+    /// Opens or closes the day or host group on History row `row`.
+    fn toggle_history_group(&mut self, row: usize) {
+        let key = match self.history_rows().into_iter().nth(row) {
+            Some(HistoryRow::Day { day, .. }) => day,
+            Some(HistoryRow::Host { day, host, .. }) => history_group_key(&day, &host),
+            _ => return,
+        };
+        if !self.history_closed.remove(&key) {
+            self.history_closed.insert(key);
         }
     }
 
@@ -1282,7 +1389,32 @@ impl App {
             .all_requests()
             .into_iter()
             .find(|r| r.id == row.id)?;
-        Some(to_client_request(project, request))
+        let mut request = to_client_request(project, request);
+        // a JSON document opens in the JSON fields when it has fields to edit
+        if let Request::Http(http) = &mut request
+            && let Some(Body::JsonRaw(text)) = &http.body
+            && let Some(value) = JsonValue::parse(text)
+                .ok()
+                .filter(|v| JsonEditor::from_value(v).is_some())
+        {
+            http.body = Some(Body::Json(value));
+        }
+        Some(request)
+    }
+
+    /// Id of the project request open in the editor.
+    pub fn active_request_id(&self) -> Option<&str> {
+        self.bound.as_deref()
+    }
+
+    /// How many metadata fields the selected project line has to read: 1 when it has a
+    /// description.
+    pub fn metadata_count(&self) -> usize {
+        self.selected_project_row().is_some_and(|r| {
+            r.description
+                .as_deref()
+                .is_some_and(|d| !d.trim().is_empty())
+        }) as usize
     }
 
     /// The center tab to show: `Some` only while the Projects tab is showing.
@@ -1658,6 +1790,9 @@ impl App {
     fn set_center_tab(&mut self, tab: CenterTab) {
         self.center_tab = tab;
         let meta = matches!(self.focus, Focus::MetaTitle | Focus::MetaDescription);
+        if self.focus == Focus::Center {
+            return;
+        }
         if (tab == CenterTab::Metadata && !meta && self.focus != Focus::List)
             || (tab == CenterTab::Request && meta)
         {
@@ -1779,9 +1914,15 @@ impl App {
                 self.history_sel = self
                     .history_sel
                     .min(self.history_rows().len().saturating_sub(1));
-                if self.history_sel == 0 && self.history_rows().len() > 1 {
-                    // rest on the first request, not on its host line
-                    self.history_sel = 1;
+                if self.history_sel == 0 {
+                    // rest on the first request, not on its day or host line
+                    if let Some(first) = self
+                        .history_rows()
+                        .iter()
+                        .position(|r| matches!(r, HistoryRow::Entry(_)))
+                    {
+                        self.history_sel = first;
+                    }
                 }
                 self.request_preview();
             }
@@ -1937,6 +2078,13 @@ impl App {
             }
         }
 
+        // `[` and `]` switch the focused panel's tab; Alt does so while typing too.
+        if let KeyCode::Char(c @ ('[' | ']')) = key.code
+            && (key.modifiers == KeyModifiers::ALT || (!typing && key.modifiers.is_empty()))
+        {
+            return self.step_tab(if c == '[' { -1 } else { 1 });
+        }
+
         if self.suggestions_open() && self.suggestion_key(key.code) {
             return;
         }
@@ -2010,6 +2158,16 @@ impl App {
             Focus::Method => self.method_key(key.code),
             Focus::Response => self.response_key(key.code),
             Focus::Captures => self.captures_key(key),
+            Focus::Logs => {
+                if key.code == KeyCode::Enter {
+                    self.open_log();
+                }
+            }
+            Focus::Center => match key.code {
+                KeyCode::Left | KeyCode::Char('h') => self.step_tab(-1),
+                KeyCode::Right | KeyCode::Char('l') => self.step_tab(1),
+                _ => {}
+            },
             Focus::MetaTitle => self.meta_key(key, true),
             Focus::MetaDescription => self.meta_key(key, false),
         }
@@ -2092,7 +2250,7 @@ impl App {
             LeftTab::Variables => {
                 self.left_tab = LeftTab::Logs;
                 if self.focus == Focus::Captures {
-                    self.set_focus(Focus::List);
+                    self.set_focus(Focus::Logs);
                 }
             }
         }
@@ -2199,36 +2357,8 @@ impl App {
             Action::ToggleVars => self.toggle_vars(),
             Action::ToggleSchemaSource => self.toggle_schema_mode(),
             Action::ToggleTls => self.insecure = !self.insecure,
-            Action::NextPanel if self.center_tab() == Some(CenterTab::Metadata) => {
-                self.set_focus(match self.focus {
-                    Focus::List => Focus::MetaTitle,
-                    Focus::MetaTitle => Focus::MetaDescription,
-                    _ => Focus::List,
-                });
-            }
-            Action::PrevPanel if self.center_tab() == Some(CenterTab::Metadata) => {
-                self.set_focus(match self.focus {
-                    Focus::List => Focus::MetaDescription,
-                    Focus::MetaDescription => Focus::MetaTitle,
-                    _ => Focus::List,
-                });
-            }
-            Action::NextPanel => {
-                self.set_focus(next_focus(
-                    self.focus,
-                    self.editor_focus(),
-                    self.kind,
-                    self.left_tab == LeftTab::Variables,
-                ));
-            }
-            Action::PrevPanel => {
-                self.set_focus(prev_focus(
-                    self.focus,
-                    self.editor_focus(),
-                    self.kind,
-                    self.left_tab == LeftTab::Variables,
-                ));
-            }
+            Action::NextPanel => self.cycle_panel(1),
+            Action::PrevPanel => self.cycle_panel(-1),
             Action::BackToList => self.set_focus(Focus::List),
         }
     }
@@ -3032,7 +3162,7 @@ impl App {
             return self.open_log();
         }
         if areas.center_tabs.contains(at) {
-            if let Some(tab) = ui::center_tab_at(areas.center_tabs, at.x) {
+            if let Some(tab) = ui::center_tab_at(areas.center_tabs, at.x, self.metadata_count()) {
                 self.set_center_tab(tab);
             }
         } else if areas.meta_title.contains(at) {
@@ -3259,11 +3389,14 @@ impl App {
 
         self.focus = Focus::List;
         if self.tab == Tab::History
-            && matches!(self.history_rows().get(item), Some(HistoryRow::Host { .. }))
+            && matches!(
+                self.history_rows().get(item),
+                Some(HistoryRow::Day { .. } | HistoryRow::Host { .. })
+            )
         {
-            // One click opens or closes a host group.
+            // One click opens or closes a day or host group.
             self.select(item);
-            self.toggle_history_host(item);
+            self.toggle_history_group(item);
             self.last_click = None;
             return;
         }
@@ -3422,13 +3555,23 @@ impl App {
                     return;
                 }
                 bind = self.selected_project_row().map(|r| r.id);
-                self.selected_project_request()
+                let mut request = self.selected_project_request();
+                // the body type picked for this request since it was opened stays
+                if bind.is_some()
+                    && bind == self.bound
+                    && self.body_kind == BodyKind::JsonRaw
+                    && let Some(Request::Http(http)) = &mut request
+                    && let Some(Body::Json(value)) = &http.body
+                {
+                    http.body = Some(Body::JsonRaw(value.to_json_pretty()));
+                }
+                request
             }
             Tab::Stored => self.selected_template().map(|t| t.template.to_request()),
             Tab::History => match (self.selected_summary(), &self.preview) {
                 (Some(s), Some(e)) if e.id == s.id => Some(e.request.clone()),
                 (None, _) => {
-                    self.toggle_history_host(self.history_sel);
+                    self.toggle_history_group(self.history_sel);
                     None
                 }
                 _ => None,
@@ -3935,46 +4078,6 @@ impl App {
     }
 }
 
-/// The focus ring: list, URL, [schema, method (gRPC only)], the request editor, response.
-fn next_focus(f: Focus, editor: Focus, kind: Kind, captures: bool) -> Focus {
-    match (f, kind) {
-        (Focus::MetaTitle | Focus::MetaDescription, _) => Focus::List,
-        (Focus::List, _) if captures => Focus::Captures,
-        (Focus::List | Focus::Captures, _) => Focus::Url,
-        (Focus::Url, Kind::Http | Kind::Ws) => editor,
-        (Focus::Url, Kind::Grpc) => Focus::Schema,
-        (Focus::Url, Kind::Graphql) => Focus::Method,
-        (Focus::Schema, _) => Focus::Method,
-        (Focus::Method, _) => editor,
-        (Focus::Body | Focus::Variables | Focus::Headers | Focus::Params | Focus::Auth, _) => {
-            Focus::Response
-        }
-        (Focus::Response, _) => Focus::List,
-    }
-}
-
-fn prev_focus(f: Focus, editor: Focus, kind: Kind, captures: bool) -> Focus {
-    match (f, kind) {
-        (Focus::MetaTitle | Focus::MetaDescription, _) => Focus::List,
-        (Focus::List, _) => Focus::Response,
-        (Focus::Captures, _) => Focus::List,
-        (Focus::Url, _) if captures => Focus::Captures,
-        (Focus::Url, _) => Focus::List,
-        (Focus::Schema, _) => Focus::Url,
-        (Focus::Method, Kind::Graphql) => Focus::Url,
-        (Focus::Method, _) => Focus::Schema,
-        (
-            Focus::Body | Focus::Variables | Focus::Headers | Focus::Params | Focus::Auth,
-            Kind::Http | Kind::Ws,
-        ) => Focus::Url,
-        (
-            Focus::Body | Focus::Variables | Focus::Headers | Focus::Params | Focus::Auth,
-            Kind::Grpc | Kind::Graphql,
-        ) => Focus::Method,
-        (Focus::Response, _) => editor,
-    }
-}
-
 /// Clicking an input puts the cursor there; clicking the last line adds a row.
 fn click_pairs(editor: &mut HeaderEditor, at: Position, inner: Rect) {
     let grid = ui::header_grid(inner, editor.rows.len(), editor.row);
@@ -4101,4 +4204,10 @@ fn open_in_browser(url: &str) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
+}
+
+/// The key of a host group of a day in [`App::history_closed`]; a day's own key is the
+/// date alone.
+fn history_group_key(day: &str, host: &str) -> String {
+    format!("{day} {host}")
 }

@@ -54,7 +54,15 @@ pub fn metadata_areas(rest: Rect) -> (Rect, Rect) {
 }
 
 pub(crate) const REQUEST_CENTER_TAB_WIDTH: u16 = " Request ".len() as u16;
-pub(crate) const METADATA_CENTER_TAB_WIDTH: u16 = " Metadata ".len() as u16;
+
+/// The title of the Metadata tab: `Metadata (n)` when there is metadata to read.
+pub(crate) fn metadata_tab_title(count: usize) -> String {
+    if count == 0 {
+        "Metadata".to_owned()
+    } else {
+        format!("Metadata ({count})")
+    }
+}
 
 /// Splits the center panel into its tab row and the rest.
 pub fn center_split(center: Rect) -> (Rect, Rect) {
@@ -62,15 +70,17 @@ pub fn center_split(center: Rect) -> (Rect, Rect) {
     (tabs, rest)
 }
 
+/// Width of the ` [n] ` label before the center tab titles.
+pub(crate) const CENTER_TAB_LABEL_WIDTH: u16 = " [2] ".len() as u16;
+
 /// Which center tab title sits under column `x` of the tab row.
-pub fn center_tab_at(tabs: Rect, x: u16) -> Option<CenterTab> {
-    let offset = x.checked_sub(tabs.x)?;
+pub fn center_tab_at(tabs: Rect, x: u16, metadata: usize) -> Option<CenterTab> {
+    let metadata_width = metadata_tab_title(metadata).len() as u16 + 2;
+    let offset = x.checked_sub(tabs.x + CENTER_TAB_LABEL_WIDTH)?;
     match offset {
         o if o < REQUEST_CENTER_TAB_WIDTH => Some(CenterTab::Request),
         o if o == REQUEST_CENTER_TAB_WIDTH => None, // divider
-        o if o < REQUEST_CENTER_TAB_WIDTH + 1 + METADATA_CENTER_TAB_WIDTH => {
-            Some(CenterTab::Metadata)
-        }
+        o if o < REQUEST_CENTER_TAB_WIDTH + 1 + metadata_width => Some(CenterTab::Metadata),
         _ => None,
     }
 }

@@ -8,7 +8,7 @@ use hozd::client::{FakeClient, FakeGrpc, Header, HttpRequest, HttpResponse, Meth
 use hozd::history::{History, Outcome};
 use hozd::project::load_projects;
 use hozd::tui::log::Level;
-use hozd::tui::{App, Focus, Msg, Tab, ui};
+use hozd::tui::{App, CenterTab, Focus, Msg, Tab, ui};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -266,11 +266,9 @@ async fn left_panel_shows_projects_and_history_tabs_with_empty_hints() {
     assert!(out.contains("no requests sent yet"));
 
     h.app.handle_key(key(KeyCode::Char('[')));
-    assert_eq!(
-        h.app.tab,
-        Tab::History,
-        "no key reaches the hidden Stored tab"
-    );
+    assert_eq!(h.app.tab, Tab::Projects, "`[` skips the hidden Stored tab");
+    h.app.handle_key(key(KeyCode::Char(']')));
+    assert_eq!(h.app.tab, Tab::History, "`]` skips the hidden Stored tab");
 }
 
 #[tokio::test]
@@ -458,8 +456,8 @@ async fn with_two_history_entries() -> Harness {
     h.app.refresh_history();
     pump(&mut h, |a| a.history.len() == 2).await;
     h.app.set_tab(Tab::History);
-    // rows: host, second, first (newest first); the selection rests on the newest
-    assert_eq!(h.app.history_sel, 1);
+    // rows: day, host, second, first (newest first); the selection rests on the newest
+    assert_eq!(h.app.history_sel, 2);
     h
 }
 
@@ -593,12 +591,12 @@ async fn clicking_history_selects_then_second_click_loads() {
     let mut h = with_two_history_entries().await;
     let a = ui::areas(SCREEN);
 
-    click(&mut h.app, a.list.x + 3, a.list.y + 2); // third row = older entry
-    assert_eq!(h.app.history_sel, 2);
+    click(&mut h.app, a.list.x + 3, a.list.y + 3); // fourth row = older entry
+    assert_eq!(h.app.history_sel, 3);
     pump(&mut h, |a| a.view().request.url == "http://x/first").await;
     assert_eq!(h.app.focus, Focus::List, "first click only previews");
 
-    click(&mut h.app, a.list.x + 3, a.list.y + 2);
+    click(&mut h.app, a.list.x + 3, a.list.y + 3);
     assert_eq!(h.app.focus, Focus::Url);
     assert_eq!(h.app.editor_request().url, "http://x/first");
     assert!(h.fake.requests().is_empty(), "clicking never sends");
@@ -611,13 +609,13 @@ async fn clicking_empty_list_space_changes_nothing_and_the_response_box_takes_fo
     click(&mut h.app, a.list.x + 1, a.list.y + 10); // below the two rows
     assert_eq!(
         (h.app.history_sel, h.app.focus, h.app.tab),
-        (1, Focus::List, Tab::History)
+        (2, Focus::List, Tab::History)
     );
 
     click(&mut h.app, a.response_body.x + 1, a.response_body.y + 1);
     assert_eq!(
         (h.app.history_sel, h.app.focus, h.app.tab),
-        (1, Focus::Response, Tab::History)
+        (2, Focus::Response, Tab::History)
     );
     assert!(h.app.modal.is_none(), "one click only focuses");
 }
@@ -674,16 +672,16 @@ async fn long_history_list_clicks_hit_the_rows_that_are_drawn() {
     for _ in 0..39 {
         h.app.handle_key(key(KeyCode::Char('j'))); // most recent first: bottom = n00
     }
-    // host line + 40 requests
-    assert_eq!(h.app.history_sel, 40);
+    // day line + host line + 40 requests
+    assert_eq!(h.app.history_sel, 41);
 
     let a = ui::areas(SCREEN);
     let drawn = text(&render(&h.app, 120, 30));
-    // selection last: the top visible row is 41 - list height; row r is request n(40 - r)
-    let top = 41 - a.list.height as usize;
-    let top_url = format!("http://x/n{:02}", 40 - top);
+    // selection last: the top visible row is 42 - list height; row r is request n(41 - r)
+    let top = 42 - a.list.height as usize;
+    let top_url = format!("http://x/n{:02}", 41 - top);
     // rows show the URI, not the full URL
-    let (top_uri, above_uri) = (format!("/n{:02}", 40 - top), format!("/n{:02}", 41 - top));
+    let (top_uri, above_uri) = (format!("/n{:02}", 41 - top), format!("/n{:02}", 42 - top));
     assert!(
         drawn.contains(&top_uri) && !drawn.contains(&above_uri),
         "{drawn}"
@@ -771,12 +769,12 @@ async fn wheel_moves_list_selection_and_scrolls_response() {
         mouse(MouseEventKind::ScrollUp, a.list.x + 1, a.list.y),
         SCREEN,
     );
-    assert_eq!(h.app.history_sel, 0);
+    assert_eq!(h.app.history_sel, 1);
     h.app.handle_mouse(
         mouse(MouseEventKind::ScrollDown, a.list.x + 1, a.list.y),
         SCREEN,
     );
-    assert_eq!(h.app.history_sel, 1);
+    assert_eq!(h.app.history_sel, 2);
 
     h.app.handle_mouse(
         mouse(
@@ -953,7 +951,11 @@ async fn focus_cycle_follows_the_active_tab() {
     h.app.handle_key(key(KeyCode::Tab));
     assert_eq!(h.app.focus, Focus::Response);
     h.app.handle_key(key(KeyCode::Tab));
+    assert_eq!(h.app.focus, Focus::Logs);
+    h.app.handle_key(key(KeyCode::Tab));
     assert_eq!(h.app.focus, Focus::List);
+    h.app.handle_key(key(KeyCode::BackTab));
+    assert_eq!(h.app.focus, Focus::Logs);
     h.app.handle_key(key(KeyCode::BackTab));
     assert_eq!(h.app.focus, Focus::Response);
     h.app.handle_key(key(KeyCode::BackTab));
@@ -1610,7 +1612,13 @@ async fn focus_ring_includes_schema_and_method_only_in_grpc_mode() {
     };
     assert_eq!(
         ring(&mut h.app),
-        [Focus::List, Focus::Url, Focus::Body, Focus::Response]
+        [
+            Focus::List,
+            Focus::Url,
+            Focus::Body,
+            Focus::Response,
+            Focus::Logs
+        ]
     );
     h.app.handle_key(ctrl('g'));
     h.app.handle_key(ctrl('g'));
@@ -1622,10 +1630,14 @@ async fn focus_ring_includes_schema_and_method_only_in_grpc_mode() {
             Focus::Schema,
             Focus::Method,
             Focus::Body,
-            Focus::Response
+            Focus::Response,
+            Focus::Logs
         ]
     );
     // Shift+Tab walks it backwards.
+    h.app
+        .handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    assert_eq!(h.app.focus, Focus::Logs);
     h.app
         .handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
     assert_eq!(h.app.focus, Focus::Response);
@@ -3359,6 +3371,7 @@ async fn a_captured_variable_replaces_dollar_name_in_the_next_body() {
     // first request: capture
     h.app.handle_key(ctrl('v')); // Variables panel, focus on the capture rows
     add_capture(&mut h.app, "auth_token", ".data.token");
+    h.app.handle_key(key(KeyCode::Tab)); // list
     h.app.handle_key(key(KeyCode::Tab)); // URL
     type_text(&mut h.app, "http://example.com/login");
     h.app.send();
@@ -3697,7 +3710,7 @@ async fn projects_tab_adds_request_and_metadata_tabs_over_the_center() {
 
     create_project(&mut h.app, "Pets");
     let a = ui::areas_with(SCREEN, Kind::Http, Some(CenterTab::Request));
-    click(&mut h.app, a.center_tabs.x + 12, a.center_tabs.y); // inside " Metadata "
+    click(&mut h.app, a.center_tabs.x + 17, a.center_tabs.y); // inside " Metadata "
     assert_eq!(h.app.center_tab, CenterTab::Metadata);
     let out = text(&render(&h.app, 120, 30));
     assert!(
@@ -3891,4 +3904,77 @@ async fn history_groups_by_host_most_recent_first_and_collapses() {
         !drawn.contains("/one") && drawn.contains("/two?x=1"),
         "{drawn}"
     );
+}
+
+#[tokio::test]
+async fn key_2_focuses_the_center_tabs_and_brackets_switch_them() {
+    let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
+    h.app.handle_key(key(KeyCode::Char('2')));
+    assert_eq!(h.app.focus, Focus::Center);
+    assert_eq!(h.app.center_tab, CenterTab::Request);
+    h.app.handle_key(key(KeyCode::Char(']')));
+    assert_eq!(h.app.center_tab, CenterTab::Metadata);
+    assert_eq!(h.app.focus, Focus::Center);
+    h.app.handle_key(key(KeyCode::Char('[')));
+    assert_eq!(h.app.center_tab, CenterTab::Request);
+}
+
+#[tokio::test]
+async fn the_opened_project_request_is_marked_and_its_json_opens_as_fields() {
+    use hozd::model::{ApiRequest, BodyContent, RestBody};
+
+    let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
+    create_project(&mut h.app, "Pets");
+    create_named(&mut h.app, 'r');
+    let ApiRequest::Rest(rest) = &mut h.app.projects[0].requests[0].api else {
+        unreachable!()
+    };
+    rest.body = Some(RestBody {
+        content: BodyContent::Raw {
+            text: "{\"name\": \"rex\"}".into(),
+            language: Some("json".into()),
+        },
+        ..Default::default()
+    });
+    h.app.projects[0].requests[0].description = Some("adds a pet".into());
+
+    h.app.handle_key(key(KeyCode::Enter));
+    assert_eq!(h.app.body_kind, hozd::client::BodyKind::Json);
+    assert!(h.app.active_request_id().is_some());
+    let out = text(&render(&h.app, 120, 30));
+    assert!(out.contains('\u{25cf}'), "{out}");
+    assert_eq!(h.app.metadata_count(), 1);
+    assert!(out.contains("Metadata (1)"), "{out}");
+}
+
+#[tokio::test]
+async fn history_groups_by_day_first_and_a_day_collapses() {
+    let mut h = harness().await;
+    let req = Request::Http(HttpRequest {
+        url: "http://a.dev/one".into(),
+        ..Default::default()
+    });
+    h.store.record(&req, &response_outcome()).await.unwrap();
+    h.app.refresh_history();
+    pump(&mut h, |a| a.history.len() == 1).await;
+    h.app.set_tab(Tab::History);
+
+    let day = h.app.history[0].day.clone();
+    assert_eq!(day.len(), 10, "{day}");
+    assert_eq!(day.matches('-').count(), 2, "{day}");
+    let drawn = text(&render(&h.app, 120, 30));
+    assert!(
+        drawn.find(&day).unwrap() < drawn.find("a.dev").unwrap()
+            && drawn.find("a.dev").unwrap() < drawn.find("/one").unwrap(),
+        "{drawn}"
+    );
+
+    // Enter on the day line closes everything under it
+    h.app.handle_key(key(KeyCode::Up));
+    h.app.handle_key(key(KeyCode::Up));
+    h.app.handle_key(key(KeyCode::Enter));
+    let drawn = text(&render(&h.app, 120, 30));
+    assert!(drawn.contains(&day) && !drawn.contains("a.dev"), "{drawn}");
 }
