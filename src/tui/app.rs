@@ -134,6 +134,8 @@ pub enum ProjectRowKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     List,
+    /// The Request / Metadata tab row over the center panel.
+    Center,
     /// Metadata tab: the title box.
     MetaTitle,
     /// Metadata tab: the description box.
@@ -156,6 +158,8 @@ pub enum Focus {
     /// The Variables panel: the captures, one row each (variable name, path into the
     /// response).
     Captures,
+    /// The Logs panel; `Enter` opens the log.
+    Logs,
 }
 
 /// What the left column's lower panel shows.
@@ -1051,11 +1055,16 @@ impl App {
     /// Panels in display order; panel `n` of the UI is entry `n - 1`.
     pub fn panels(&self) -> Vec<Focus> {
         if self.center_tab() == Some(CenterTab::Metadata) {
-            return vec![Focus::List, Focus::MetaTitle, Focus::MetaDescription];
+            return vec![
+                Focus::List,
+                Focus::Center,
+                Focus::MetaTitle,
+                Focus::MetaDescription,
+            ];
         }
         let mut panels = vec![Focus::List];
-        if self.left_tab == LeftTab::Variables {
-            panels.push(Focus::Captures);
+        if self.center_tab().is_some() {
+            panels.push(Focus::Center);
         }
         panels.push(Focus::Url);
         match self.kind {
@@ -1063,8 +1072,77 @@ impl App {
             Kind::Graphql => panels.push(Focus::Method),
             _ => {}
         }
-        panels.extend([self.editor_focus(), Focus::Response]);
+        panels.extend([self.editor_focus(), Focus::Response, self.left_focus()]);
         panels
+    }
+
+    /// `Tab` / `Shift+Tab`: focus the next or previous panel in display order, skipping
+    /// the center tab row.
+    fn cycle_panel(&mut self, delta: isize) {
+        let panels = self.panels();
+        let n = panels.len() as isize;
+        let mut i = panels.iter().position(|p| *p == self.focus).unwrap_or(0) as isize;
+        // the tab row is reached by its number or by `[` / `]`, not by Tab
+        loop {
+            i = (i + delta).rem_euclid(n);
+            if panels[i as usize] != Focus::Center {
+                break;
+            }
+        }
+        self.set_focus(panels[i as usize]);
+    }
+
+    /// The focus value of the left column's lower panel as it shows now.
+    pub fn left_focus(&self) -> Focus {
+        match self.left_tab {
+            LeftTab::Logs => Focus::Logs,
+            LeftTab::Variables => Focus::Captures,
+        }
+    }
+
+    /// `[` and `]`: moves to the previous or next tab of the focused panel.
+    fn step_tab(&mut self, delta: isize) {
+        fn step<T: Copy + PartialEq>(items: &[T], cur: T, delta: isize) -> T {
+            let i = items.iter().position(|t| *t == cur).unwrap_or(0) as isize;
+            items[(i + delta).rem_euclid(items.len() as isize) as usize]
+        }
+        match self.focus {
+            Focus::List => {
+                let tab = step(&[Tab::Projects, Tab::History], self.tab, delta);
+                self.set_tab(tab);
+            }
+            Focus::Logs | Focus::Captures => {
+                let tab = step(&[LeftTab::Logs, LeftTab::Variables], self.left_tab, delta);
+                if tab != self.left_tab {
+                    self.toggle_variables_panel();
+                }
+            }
+            Focus::Center | Focus::MetaTitle | Focus::MetaDescription => {
+                let tab = step(
+                    &[CenterTab::Request, CenterTab::Metadata],
+                    self.center_tab,
+                    delta,
+                );
+                self.set_center_tab(tab);
+            }
+            Focus::Body | Focus::Variables | Focus::Headers | Focus::Params | Focus::Auth => {
+                let tabs: &[RequestTab] = match self.kind {
+                    Kind::Graphql => {
+                        &[RequestTab::Body, RequestTab::Variables, RequestTab::Headers]
+                    }
+                    Kind::Http => &[
+                        RequestTab::Body,
+                        RequestTab::Headers,
+                        RequestTab::Params,
+                        RequestTab::Auth,
+                    ],
+                    _ => &[RequestTab::Body, RequestTab::Headers],
+                };
+                let tab = step(tabs, self.request_tab, delta);
+                self.set_request_tab(tab);
+            }
+            _ => {}
+        }
     }
 
     pub fn set_request_tab(&mut self, tab: RequestTab) {
@@ -1658,6 +1736,9 @@ impl App {
     fn set_center_tab(&mut self, tab: CenterTab) {
         self.center_tab = tab;
         let meta = matches!(self.focus, Focus::MetaTitle | Focus::MetaDescription);
+        if self.focus == Focus::Center {
+            return;
+        }
         if (tab == CenterTab::Metadata && !meta && self.focus != Focus::List)
             || (tab == CenterTab::Request && meta)
         {
@@ -1937,6 +2018,13 @@ impl App {
             }
         }
 
+        // `[` and `]` switch the focused panel's tab; Alt does so while typing too.
+        if let KeyCode::Char(c @ ('[' | ']')) = key.code
+            && (key.modifiers == KeyModifiers::ALT || (!typing && key.modifiers.is_empty()))
+        {
+            return self.step_tab(if c == '[' { -1 } else { 1 });
+        }
+
         if self.suggestions_open() && self.suggestion_key(key.code) {
             return;
         }
@@ -2010,6 +2098,16 @@ impl App {
             Focus::Method => self.method_key(key.code),
             Focus::Response => self.response_key(key.code),
             Focus::Captures => self.captures_key(key),
+            Focus::Logs => {
+                if key.code == KeyCode::Enter {
+                    self.open_log();
+                }
+            }
+            Focus::Center => match key.code {
+                KeyCode::Left | KeyCode::Char('h') => self.step_tab(-1),
+                KeyCode::Right | KeyCode::Char('l') => self.step_tab(1),
+                _ => {}
+            },
             Focus::MetaTitle => self.meta_key(key, true),
             Focus::MetaDescription => self.meta_key(key, false),
         }
@@ -2092,7 +2190,7 @@ impl App {
             LeftTab::Variables => {
                 self.left_tab = LeftTab::Logs;
                 if self.focus == Focus::Captures {
-                    self.set_focus(Focus::List);
+                    self.set_focus(Focus::Logs);
                 }
             }
         }
@@ -2199,36 +2297,8 @@ impl App {
             Action::ToggleVars => self.toggle_vars(),
             Action::ToggleSchemaSource => self.toggle_schema_mode(),
             Action::ToggleTls => self.insecure = !self.insecure,
-            Action::NextPanel if self.center_tab() == Some(CenterTab::Metadata) => {
-                self.set_focus(match self.focus {
-                    Focus::List => Focus::MetaTitle,
-                    Focus::MetaTitle => Focus::MetaDescription,
-                    _ => Focus::List,
-                });
-            }
-            Action::PrevPanel if self.center_tab() == Some(CenterTab::Metadata) => {
-                self.set_focus(match self.focus {
-                    Focus::List => Focus::MetaDescription,
-                    Focus::MetaDescription => Focus::MetaTitle,
-                    _ => Focus::List,
-                });
-            }
-            Action::NextPanel => {
-                self.set_focus(next_focus(
-                    self.focus,
-                    self.editor_focus(),
-                    self.kind,
-                    self.left_tab == LeftTab::Variables,
-                ));
-            }
-            Action::PrevPanel => {
-                self.set_focus(prev_focus(
-                    self.focus,
-                    self.editor_focus(),
-                    self.kind,
-                    self.left_tab == LeftTab::Variables,
-                ));
-            }
+            Action::NextPanel => self.cycle_panel(1),
+            Action::PrevPanel => self.cycle_panel(-1),
             Action::BackToList => self.set_focus(Focus::List),
         }
     }
@@ -3932,46 +4002,6 @@ impl App {
             };
             let _ = tx.send(msg);
         });
-    }
-}
-
-/// The focus ring: list, URL, [schema, method (gRPC only)], the request editor, response.
-fn next_focus(f: Focus, editor: Focus, kind: Kind, captures: bool) -> Focus {
-    match (f, kind) {
-        (Focus::MetaTitle | Focus::MetaDescription, _) => Focus::List,
-        (Focus::List, _) if captures => Focus::Captures,
-        (Focus::List | Focus::Captures, _) => Focus::Url,
-        (Focus::Url, Kind::Http | Kind::Ws) => editor,
-        (Focus::Url, Kind::Grpc) => Focus::Schema,
-        (Focus::Url, Kind::Graphql) => Focus::Method,
-        (Focus::Schema, _) => Focus::Method,
-        (Focus::Method, _) => editor,
-        (Focus::Body | Focus::Variables | Focus::Headers | Focus::Params | Focus::Auth, _) => {
-            Focus::Response
-        }
-        (Focus::Response, _) => Focus::List,
-    }
-}
-
-fn prev_focus(f: Focus, editor: Focus, kind: Kind, captures: bool) -> Focus {
-    match (f, kind) {
-        (Focus::MetaTitle | Focus::MetaDescription, _) => Focus::List,
-        (Focus::List, _) => Focus::Response,
-        (Focus::Captures, _) => Focus::List,
-        (Focus::Url, _) if captures => Focus::Captures,
-        (Focus::Url, _) => Focus::List,
-        (Focus::Schema, _) => Focus::Url,
-        (Focus::Method, Kind::Graphql) => Focus::Url,
-        (Focus::Method, _) => Focus::Schema,
-        (
-            Focus::Body | Focus::Variables | Focus::Headers | Focus::Params | Focus::Auth,
-            Kind::Http | Kind::Ws,
-        ) => Focus::Url,
-        (
-            Focus::Body | Focus::Variables | Focus::Headers | Focus::Params | Focus::Auth,
-            Kind::Grpc | Kind::Graphql,
-        ) => Focus::Method,
-        (Focus::Response, _) => editor,
     }
 }
 

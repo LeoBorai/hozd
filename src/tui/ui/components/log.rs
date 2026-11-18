@@ -25,14 +25,14 @@ pub(crate) fn draw_log(frame: &mut Frame, app: &App, area: Rect) {
     };
     let hint = if variables { "" } else { " (Ctrl+E: open)" };
     let title = Line::from(vec![
-        Span::raw(" "),
+        Span::raw(format!(" {}", numbered(app, app.left_focus(), ""))),
         Span::styled("Logs", logs_style),
         Span::raw("|"),
         Span::styled("Variables", vars_style),
         Span::raw(hint),
         Span::raw(" "),
     ]);
-    let outer = block_titled(title, app.focus == Focus::Captures);
+    let outer = block_titled(title, matches!(app.focus, Focus::Captures | Focus::Logs));
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
     if inner.width == 0 || inner.height == 0 {

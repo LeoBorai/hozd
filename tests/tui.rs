@@ -8,7 +8,7 @@ use hozd::client::{FakeClient, FakeGrpc, Header, HttpRequest, HttpResponse, Meth
 use hozd::history::{History, Outcome};
 use hozd::project::load_projects;
 use hozd::tui::log::Level;
-use hozd::tui::{App, Focus, Msg, Tab, ui};
+use hozd::tui::{App, CenterTab, Focus, Msg, Tab, ui};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -266,11 +266,9 @@ async fn left_panel_shows_projects_and_history_tabs_with_empty_hints() {
     assert!(out.contains("no requests sent yet"));
 
     h.app.handle_key(key(KeyCode::Char('[')));
-    assert_eq!(
-        h.app.tab,
-        Tab::History,
-        "no key reaches the hidden Stored tab"
-    );
+    assert_eq!(h.app.tab, Tab::Projects, "`[` skips the hidden Stored tab");
+    h.app.handle_key(key(KeyCode::Char(']')));
+    assert_eq!(h.app.tab, Tab::History, "`]` skips the hidden Stored tab");
 }
 
 #[tokio::test]
@@ -953,7 +951,11 @@ async fn focus_cycle_follows_the_active_tab() {
     h.app.handle_key(key(KeyCode::Tab));
     assert_eq!(h.app.focus, Focus::Response);
     h.app.handle_key(key(KeyCode::Tab));
+    assert_eq!(h.app.focus, Focus::Logs);
+    h.app.handle_key(key(KeyCode::Tab));
     assert_eq!(h.app.focus, Focus::List);
+    h.app.handle_key(key(KeyCode::BackTab));
+    assert_eq!(h.app.focus, Focus::Logs);
     h.app.handle_key(key(KeyCode::BackTab));
     assert_eq!(h.app.focus, Focus::Response);
     h.app.handle_key(key(KeyCode::BackTab));
@@ -1610,7 +1612,13 @@ async fn focus_ring_includes_schema_and_method_only_in_grpc_mode() {
     };
     assert_eq!(
         ring(&mut h.app),
-        [Focus::List, Focus::Url, Focus::Body, Focus::Response]
+        [
+            Focus::List,
+            Focus::Url,
+            Focus::Body,
+            Focus::Response,
+            Focus::Logs
+        ]
     );
     h.app.handle_key(ctrl('g'));
     h.app.handle_key(ctrl('g'));
@@ -1622,10 +1630,14 @@ async fn focus_ring_includes_schema_and_method_only_in_grpc_mode() {
             Focus::Schema,
             Focus::Method,
             Focus::Body,
-            Focus::Response
+            Focus::Response,
+            Focus::Logs
         ]
     );
     // Shift+Tab walks it backwards.
+    h.app
+        .handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    assert_eq!(h.app.focus, Focus::Logs);
     h.app
         .handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
     assert_eq!(h.app.focus, Focus::Response);
@@ -3359,6 +3371,7 @@ async fn a_captured_variable_replaces_dollar_name_in_the_next_body() {
     // first request: capture
     h.app.handle_key(ctrl('v')); // Variables panel, focus on the capture rows
     add_capture(&mut h.app, "auth_token", ".data.token");
+    h.app.handle_key(key(KeyCode::Tab)); // list
     h.app.handle_key(key(KeyCode::Tab)); // URL
     type_text(&mut h.app, "http://example.com/login");
     h.app.send();
@@ -3697,7 +3710,7 @@ async fn projects_tab_adds_request_and_metadata_tabs_over_the_center() {
 
     create_project(&mut h.app, "Pets");
     let a = ui::areas_with(SCREEN, Kind::Http, Some(CenterTab::Request));
-    click(&mut h.app, a.center_tabs.x + 12, a.center_tabs.y); // inside " Metadata "
+    click(&mut h.app, a.center_tabs.x + 17, a.center_tabs.y); // inside " Metadata "
     assert_eq!(h.app.center_tab, CenterTab::Metadata);
     let out = text(&render(&h.app, 120, 30));
     assert!(
@@ -3891,4 +3904,18 @@ async fn history_groups_by_host_most_recent_first_and_collapses() {
         !drawn.contains("/one") && drawn.contains("/two?x=1"),
         "{drawn}"
     );
+}
+
+#[tokio::test]
+async fn key_2_focuses_the_center_tabs_and_brackets_switch_them() {
+    let mut h = harness().await;
+    h.app.set_tab(Tab::Projects);
+    h.app.handle_key(key(KeyCode::Char('2')));
+    assert_eq!(h.app.focus, Focus::Center);
+    assert_eq!(h.app.center_tab, CenterTab::Request);
+    h.app.handle_key(key(KeyCode::Char(']')));
+    assert_eq!(h.app.center_tab, CenterTab::Metadata);
+    assert_eq!(h.app.focus, Focus::Center);
+    h.app.handle_key(key(KeyCode::Char('[')));
+    assert_eq!(h.app.center_tab, CenterTab::Request);
 }

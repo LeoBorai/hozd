@@ -19,16 +19,37 @@ pub(crate) fn draw_center_tabs(frame: &mut Frame, app: &App, area: Rect) {
         CenterTab::Request => 0,
         CenterTab::Metadata => 1,
     };
+    let focused = app.focus == Focus::Center;
+    let label = numbered(app, Focus::Center, "");
+    let [label_area, tabs_area] = ratatui::layout::Layout::horizontal([
+        ratatui::layout::Constraint::Length(super::super::layout::CENTER_TAB_LABEL_WIDTH),
+        ratatui::layout::Constraint::Min(0),
+    ])
+    .areas(area);
+    let label_style = if focused {
+        Style::new().add_modifier(Modifier::BOLD).fg(Color::Green)
+    } else {
+        Style::new()
+    };
+    frame.render_widget(
+        Paragraph::new(Line::styled(format!(" {label}"), label_style)),
+        label_area,
+    );
     frame.render_widget(
         Tabs::new(["Request", "Metadata"])
             .select(selected)
+            .style(if focused {
+                Style::new().fg(Color::Green)
+            } else {
+                Style::new()
+            })
             .highlight_style(
                 Style::new()
                     .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
                     .fg(Color::Yellow),
             )
             .divider("|"),
-        area,
+        tabs_area,
     );
 }
 

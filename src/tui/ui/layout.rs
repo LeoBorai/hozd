@@ -62,9 +62,12 @@ pub fn center_split(center: Rect) -> (Rect, Rect) {
     (tabs, rest)
 }
 
+/// Width of the ` [n] ` label before the center tab titles.
+pub(crate) const CENTER_TAB_LABEL_WIDTH: u16 = " [2] ".len() as u16;
+
 /// Which center tab title sits under column `x` of the tab row.
 pub fn center_tab_at(tabs: Rect, x: u16) -> Option<CenterTab> {
-    let offset = x.checked_sub(tabs.x)?;
+    let offset = x.checked_sub(tabs.x + CENTER_TAB_LABEL_WIDTH)?;
     match offset {
         o if o < REQUEST_CENTER_TAB_WIDTH => Some(CenterTab::Request),
         o if o == REQUEST_CENTER_TAB_WIDTH => None, // divider
