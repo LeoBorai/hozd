@@ -38,8 +38,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 serde_path_to_error = "0.1.20"
 sha2 = "0.11"
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 thiserror = "2.0.21"
+toasty = { version = "0.11.0", default-features = false, features = ["sqlite", "migration"] }
+toasty-driver-sqlite = "0.11.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 tokio-stream = "0.1.19"
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }

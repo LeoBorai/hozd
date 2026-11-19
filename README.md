@@ -331,7 +331,7 @@ history entries appear here and are saved with every history entry.
 
 ## Development
 
-Needs Rust (edition 2024), [`cargo-nextest`](https://nexte.st), [`sqlx-cli`](https://crates.io/crates/sqlx-cli)
+Needs Rust (edition 2024), [`cargo-nextest`](https://nexte.st),
 [`cargo-deny`](https://crates.io/crates/cargo-deny) and [`just`](https://just.systems).
 
 ```sh
@@ -340,13 +340,13 @@ just fmt               # clippy --fix + rustfmt
 just run               # run hozd
 just deny              # cargo-deny: advisories, licenses, bans, sources
 just deps-update       # cargo update, then cargo deny
-just db-new-migration add_something   # new numbered migration in migrations/
-just db-prepare        # refresh the committed .sqlx/ query metadata
+just db-new-migration add_something   # new numbered migration in toasty/migrations/
 ```
 
-SQL queries are checked at compile time. Builds use the committed `.sqlx/` metadata
-(`SQLX_OFFLINE=true`); after changing a query or a migration run `just db-prepare` and
-commit `.sqlx/`. Never edit a released migration: add a new one.
+The history database is managed with [Toasty](https://github.com/tokio-rs/toasty). Migrations
+are plain SQL files in `toasty/migrations/`, listed in order in `toasty/history.toml` and
+embedded in the binary; pending ones run at startup. Separate the statements of a migration
+with a `-- #[toasty::breakpoint]` line. Never edit a released migration: add a new one.
 
 ### Reading a response
 

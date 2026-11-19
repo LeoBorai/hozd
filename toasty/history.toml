@@ -1,0 +1,19 @@
+# Migrations embedded by `toasty::embed_migrations!` and applied in this order at startup.
+# Ids match the versions sqlx recorded in `_sqlx_migrations` before hozd moved to Toasty,
+# so databases migrated by sqlx are adopted without re-running anything.
+version = 1
+
+[[migrations]]
+id = 1
+name = "0001_init.sql"
+snapshot_name = "0001_snapshot.toml"
+
+[[migrations]]
+id = 2
+name = "0002_grpc.sql"
+snapshot_name = "0002_snapshot.toml"
+
+[[migrations]]
+id = 3
+name = "0003_projects.sql"
+snapshot_name = "0003_snapshot.toml"

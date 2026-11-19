@@ -5,7 +5,28 @@ use hozd::client::{
     SchemaSource,
 };
 use hozd::history::{History, HistoryError, MAX_BODY_BYTES, Outcome};
-use sqlx::SqlitePool;
+
+/// A fresh, migrated history in a temporary directory, which must outlive it.
+async fn fresh() -> (tempfile::TempDir, History) {
+    let tmp = tempfile::tempdir().unwrap();
+    let history = History::open(&tmp.path().join("db.sqlite3")).await.unwrap();
+    (tmp, history)
+}
+
+/// Marks `path` as migrated by a newer hozd: an applied migration this binary does not embed.
+async fn apply_future_migration(path: &std::path::Path) {
+    let mut db = toasty::Db::builder()
+        .build(toasty_driver_sqlite::Sqlite::open(path))
+        .await
+        .unwrap();
+    toasty::sql::statement(
+        "INSERT INTO __toasty_migrations (id, name, applied_at)
+         VALUES (9999, '9999_from_the_future.sql', datetime('now'))",
+    )
+    .exec(&mut db)
+    .await
+    .unwrap();
+}
 
 fn request(url: &str) -> Request {
     Request::Http(HttpRequest {
@@ -26,9 +47,9 @@ fn response(status: u16, body: &str) -> Outcome {
     })
 }
 
-#[sqlx::test]
-async fn success_entry_holds_full_request_and_response(pool: SqlitePool) {
-    let history = History::from_pool(pool);
+#[tokio::test]
+async fn success_entry_holds_full_request_and_response() {
+    let (_tmp, history) = fresh().await;
     let req = request("http://x/ok");
     let out = response(201, "created");
     let id = history.record(&req, &out).await.unwrap();
@@ -38,9 +59,9 @@ async fn success_entry_holds_full_request_and_response(pool: SqlitePool) {
     assert_eq!(entry.outcome, out);
 }
 
-#[sqlx::test]
-async fn error_entry_holds_request_and_message(pool: SqlitePool) {
-    let history = History::from_pool(pool);
+#[tokio::test]
+async fn error_entry_holds_request_and_message() {
+    let (_tmp, history) = fresh().await;
     let req = request("http://x/down");
     let out = Outcome::Error("request failed: connection refused".into());
     let id = history.record(&req, &out).await.unwrap();
@@ -50,9 +71,9 @@ async fn error_entry_holds_request_and_message(pool: SqlitePool) {
     assert_eq!(entry.outcome, out);
 }
 
-#[sqlx::test]
-async fn list_is_newest_first_with_status(pool: SqlitePool) {
-    let history = History::from_pool(pool);
+#[tokio::test]
+async fn list_is_newest_first_with_status() {
+    let (_tmp, history) = fresh().await;
     history
         .record(&request("http://x/1"), &response(200, ""))
         .await
@@ -71,14 +92,15 @@ async fn list_is_newest_first_with_status(pool: SqlitePool) {
     assert_eq!(history.list(1).await.unwrap().len(), 1);
 }
 
-#[sqlx::test]
-async fn get_unknown_id_is_none(pool: SqlitePool) {
-    assert!(History::from_pool(pool).get(999).await.unwrap().is_none());
+#[tokio::test]
+async fn get_unknown_id_is_none() {
+    let (_tmp, history) = fresh().await;
+    assert!(history.get(999).await.unwrap().is_none());
 }
 
-#[sqlx::test]
-async fn oversized_bodies_are_truncated_on_char_boundary(pool: SqlitePool) {
-    let history = History::from_pool(pool);
+#[tokio::test]
+async fn oversized_bodies_are_truncated_on_char_boundary() {
+    let (_tmp, history) = fresh().await;
     let big = "é".repeat(MAX_BODY_BYTES); // 2 bytes per char
     let id = history
         .record(&request("http://x"), &response(200, &big))
@@ -130,18 +152,7 @@ async fn newer_database_is_refused_and_left_unchanged() {
     let path = tmp.path().join("db.sqlite3");
     History::open(&path).await.unwrap();
 
-    // Pretend a newer hozd applied a migration this binary does not embed.
-    let pool = SqlitePool::connect(&format!("sqlite://{}", path.display()))
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
-         VALUES (9999, 'from the future', 1, x'00', 0)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    pool.close().await;
+    apply_future_migration(&path).await;
     let before = std::fs::read(&path).unwrap();
 
     let err = History::open(&path).await.err().expect("must refuse");
@@ -175,9 +186,9 @@ fn grpc_status(code: i32, message: &str) -> Option<GrpcStatus> {
     })
 }
 
-#[sqlx::test]
-async fn streamed_grpc_call_is_one_entry_with_every_message_in_order(pool: SqlitePool) {
-    let history = History::from_pool(pool);
+#[tokio::test]
+async fn streamed_grpc_call_is_one_entry_with_every_message_in_order() {
+    let (_tmp, history) = fresh().await;
     let outcome = Outcome::Grpc(GrpcOutcome {
         metadata: vec![Header::new("content-type", "application/grpc")],
         messages: vec!["{\"n\":1}".into(), "{\"n\":2}".into(), "{\"n\":3}".into()],
@@ -194,9 +205,9 @@ async fn streamed_grpc_call_is_one_entry_with_every_message_in_order(pool: Sqlit
     assert_eq!(entry.outcome, outcome);
 }
 
-#[sqlx::test]
-async fn cancelled_grpc_call_keeps_its_messages_and_status(pool: SqlitePool) {
-    let history = History::from_pool(pool);
+#[tokio::test]
+async fn cancelled_grpc_call_keeps_its_messages_and_status() {
+    let (_tmp, history) = fresh().await;
     let outcome = Outcome::Grpc(GrpcOutcome {
         messages: vec!["{\"n\":1}".into()],
         status: grpc_status(1, "cancelled by the user"),
@@ -212,9 +223,9 @@ async fn cancelled_grpc_call_keeps_its_messages_and_status(pool: SqlitePool) {
     assert_eq!((list[0].kind, list[0].status), (Kind::Grpc, Some(1)));
 }
 
-#[sqlx::test]
-async fn grpc_call_that_never_connected_keeps_the_error(pool: SqlitePool) {
-    let history = History::from_pool(pool);
+#[tokio::test]
+async fn grpc_call_that_never_connected_keeps_the_error() {
+    let (_tmp, history) = fresh().await;
     let outcome = Outcome::Grpc(GrpcOutcome {
         status: None,
         error: Some("cannot connect to https://api.example.com:443: refused".into()),
@@ -228,9 +239,9 @@ async fn grpc_call_that_never_connected_keeps_the_error(pool: SqlitePool) {
     assert_eq!(history.list(10).await.unwrap()[0].status, None);
 }
 
-#[sqlx::test]
-async fn mixed_kinds_are_listed_newest_first_each_with_its_kind(pool: SqlitePool) {
-    let history = History::from_pool(pool);
+#[tokio::test]
+async fn mixed_kinds_are_listed_newest_first_each_with_its_kind() {
+    let (_tmp, history) = fresh().await;
     history
         .record(&request("http://x/first"), &response(200, "a"))
         .await
@@ -250,9 +261,9 @@ async fn mixed_kinds_are_listed_newest_first_each_with_its_kind(pool: SqlitePool
     assert_eq!(list[1].method, "POST");
 }
 
-#[sqlx::test]
-async fn grpc_messages_past_the_size_cap_are_dropped(pool: SqlitePool) {
-    let history = History::from_pool(pool);
+#[tokio::test]
+async fn grpc_messages_past_the_size_cap_are_dropped() {
+    let (_tmp, history) = fresh().await;
     let big = "x".repeat(MAX_BODY_BYTES / 2 + 1);
     let outcome = Outcome::Grpc(GrpcOutcome {
         messages: vec![big.clone(), big.clone(), "tail".into()],
@@ -267,9 +278,9 @@ async fn grpc_messages_past_the_size_cap_are_dropped(pool: SqlitePool) {
     assert_eq!(stored.messages, vec![big]);
 }
 
-#[sqlx::test]
-async fn mismatched_request_and_outcome_kinds_are_refused(pool: SqlitePool) {
-    let history = History::from_pool(pool);
+#[tokio::test]
+async fn mismatched_request_and_outcome_kinds_are_refused() {
+    let (_tmp, history) = fresh().await;
     let err = history
         .record(&grpc_request(), &response(200, "a"))
         .await
@@ -277,10 +288,10 @@ async fn mismatched_request_and_outcome_kinds_are_refused(pool: SqlitePool) {
     assert!(matches!(err, HistoryError::KindMismatch), "{err}");
 }
 
-#[sqlx::test]
-async fn every_body_type_survives_history(pool: SqlitePool) {
+#[tokio::test]
+async fn every_body_type_survives_history() {
     use hozd::client::{Body, Field, JsonValue, Part};
-    let history = History::from_pool(pool);
+    let (_tmp, history) = fresh().await;
     let bodies = [
         Body::Text("t".into()),
         Body::Json(JsonValue::parse(r#"{"b":1,"a":[null]}"#).unwrap()),
@@ -301,11 +312,11 @@ async fn every_body_type_survives_history(pool: SqlitePool) {
     }
 }
 
-#[sqlx::test]
-async fn projects_round_trip_and_replace_by_id(pool: SqlitePool) {
+#[tokio::test]
+async fn projects_round_trip_and_replace_by_id() {
     use hozd::model::{Directory, Project, Request as PRequest, RestRequest};
 
-    let store = History::from_pool(pool);
+    let (_tmp, store) = fresh().await;
     let mut project = Project::new("Pets");
     let mut dir = Directory::new("pets");
     dir.requests.push(PRequest::rest(

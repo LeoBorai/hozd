@@ -28,7 +28,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest,sqlx-cli
+          tool: cargo-nextest
       - name: Install script is valid POSIX sh
         if: matrix.os == 'ubuntu-latest'
         run: sh -n install.sh
@@ -43,15 +43,6 @@ jobs:
       - name: Package builds from its own tarball (what `cargo publish` verifies)
         if: matrix.os == 'ubuntu-latest'
         run: cargo package --locked
-      - name: SQLx offline metadata is current
-        if: matrix.os == 'ubuntu-latest'
-        env:
-          SQLX_OFFLINE: "false"
-          DATABASE_URL: sqlite://target/ci.sqlite3
-        run: |
-          sqlx database create
-          sqlx migrate run
-          cargo sqlx prepare --check -- --all-targets
 
   deny:
     name: Dependencies (cargo-deny)

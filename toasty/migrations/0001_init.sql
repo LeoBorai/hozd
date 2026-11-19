@@ -1,5 +1,8 @@
--- Applied migrations are append-only: never edit this file once released,
--- add a new numbered migration instead (editing breaks the checksum on users' databases).
+-- Applied migrations are append-only: never edit this file once released, add a new
+-- numbered migration instead (and its entry in toasty/history.toml). Toasty records only the
+-- id of an applied migration, so an edit never reaches users' databases.
+-- Statements are separated by `toasty::breakpoint` comment lines: the SQLite driver runs one
+-- statement at a time.
 
 CREATE TABLE history (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -15,4 +18,5 @@ CREATE TABLE history (
     error            TEXT              -- set when no response was received
 );
 
+-- #[toasty::breakpoint]
 CREATE INDEX history_created_at ON history (id DESC);
