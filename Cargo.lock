@@ -1276,7 +1276,7 @@ dependencies = [
 
 [[package]]
 name = "hozd"
-version = "0.2.0-projects.5"
+version = "0.2.0-projects.6"
 dependencies = [
  "anyhow",
  "async-trait",
