@@ -5,9 +5,10 @@ all-features = true
 version = 2
 yanked = "deny"
 ignore = [
-    # sqlx-sqlite 0.9.0 caps libsqlite3-sys at <0.38, the fix needs >=0.39. hozd only opens its
-    # own history database, never a file written by an untrusted party. Drop once sqlx allows 0.39.
-    { id = "RUSTSEC-2026-0459", reason = "no compatible fix in sqlx 0.9; only the app's own DB is opened" },
+    # toasty-driver-sqlite 0.11 uses rusqlite 0.40, which caps libsqlite3-sys at 0.38; the fix
+    # needs >=0.39. hozd only opens its own history database, never a file written by an
+    # untrusted party. Drop once rusqlite allows 0.39.
+    { id = "RUSTSEC-2026-0459", reason = "no compatible fix in rusqlite 0.40; only the app's own DB is opened" },
 ]
 
 [licenses]
@@ -29,20 +30,17 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-# Older copies pulled in by sqlx / wiremock; drop these once they move to the newer versions.
+# Older copies pulled in by dependencies; drop these once they move to the newer versions.
 skip = [
-    { crate = "sha2@0.10.9", reason = "sqlx-core still uses 0.10; hmac 0.13 needs sha2 0.11" },
-    { crate = "base64@0.22.1", reason = "sqlx-core and wiremock still use 0.22; reqwest uses 0.23" },
-    { crate = "hashbrown@0.16.1", reason = "sqlx-core and hashlink still use 0.16" },
+    { crate = "base64@0.22.1", reason = "prost-reflect and wiremock still use 0.22; reqwest uses 0.23" },
+    { crate = "hashbrown@0.16.1", reason = "rsqlite-vfs (rusqlite, wasm only) still uses 0.16; the rest use 0.17" },
     { crate = "getrandom@0.2.17", reason = "ring still uses 0.2; jobserver and tempfile use 0.4" },
     { crate = "synstructure@0.13.2", reason = "asn1-rs-derive (x509-parser) still uses 0.13; yoke-derive uses 0.14" },
     { crate = "unicode-width@0.1.14", reason = "miette still uses 0.1; ratatui uses 0.2" },
     { crate = "windows-sys@0.52.0", reason = "ring still uses 0.52; the rest use 0.61" },
-    { crate = "block-buffer@0.10.4", reason = "sha2 (sqlx-core) still uses 0.10; sha1 (tungstenite) uses 0.12" },
-    { crate = "cpufeatures@0.2.17", reason = "sha2 (sqlx-core) still uses 0.2; sha1 and chacha20 (tungstenite) use 0.3" },
-    { crate = "crypto-common@0.1.6", reason = "digest 0.10 (sha2, sqlx-core) still uses 0.1; digest 0.11 (tungstenite) uses 0.2" },
-    { crate = "digest@0.10.7", reason = "sha2 (sqlx-core) still uses 0.10; sha1 (tungstenite) uses 0.11" },
-    { crate = "syn@2.0.119", reason = "sqlx-macros and other proc-macros still use syn 2; others use 3" },
+    { crate = "syn@2.0.119", reason = "toasty-macros and other proc-macros still use syn 2; others use 3" },
+    { crate = "deadpool@0.12.3", reason = "wiremock (dev) still uses 0.12; toasty uses 0.13" },
+    { crate = "deadpool-runtime@0.1.4", reason = "deadpool 0.12 (wiremock, dev) still uses 0.1; deadpool 0.13 uses 0.3" },
     { crate = "rustix@0.38.44", reason = "ratatui-image 11 still uses 0.38; crossterm and tempfile use 1.x" },
     { crate = "linux-raw-sys@0.4.15", reason = "rustix 0.38 (ratatui-image) still uses 0.4; rustix 1.x uses 0.12" },
     { crate = "rand@0.8.8", reason = "ratatui-image 11 still uses 0.8; tungstenite and quantette use 0.10" },

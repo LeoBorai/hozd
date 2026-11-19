@@ -4,7 +4,6 @@ use hozd::client::{Header, HttpRequest, HttpResponse, Method, Request};
 use hozd::history::{History, Outcome};
 use hozd::paths::Home;
 use hozd::startup;
-use sqlx::SqlitePool;
 
 #[tokio::test]
 async fn first_run_creates_home_and_database() {
@@ -41,17 +40,19 @@ async fn newer_database_is_refused_with_upgrade_message() {
     let home = Home::at(tmp.path());
     startup(&home).await.unwrap();
 
-    let pool = SqlitePool::connect(&format!("sqlite://{}", home.db_path().display()))
+    // pretend a newer hozd applied a migration this binary does not embed
+    let mut db = toasty::Db::builder()
+        .build(toasty_driver_sqlite::Sqlite::open(home.db_path()))
         .await
         .unwrap();
-    sqlx::query(
-        "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
-         VALUES (9999, 'future', 1, x'00', 0)",
+    toasty::sql::statement(
+        "INSERT INTO __toasty_migrations (id, name, applied_at)
+         VALUES (9999, '9999_future.sql', datetime('now'))",
     )
-    .execute(&pool)
+    .exec(&mut db)
     .await
     .unwrap();
-    pool.close().await;
+    drop(db);
 
     let err = startup(&home).await.err().unwrap();
     assert!(format!("{err:#}").contains("newer hozd"), "{err:#}");

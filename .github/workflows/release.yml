@@ -14,8 +14,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # queries are checked against the committed .sqlx/ metadata, no database needed
-  SQLX_OFFLINE: "true"
 
 jobs:
   check-tag:

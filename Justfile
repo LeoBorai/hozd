@@ -35,13 +35,14 @@ package:
 test:
     cargo nextest run --workspace --no-tests=pass
 
-# Creates a new SQL migration in migrations/ (needs sqlx-cli). Applied migrations are append-only: never edit them
+# Creates the next numbered SQL migration in toasty/migrations/ and its entry in
+# toasty/history.toml. Applied migrations are append-only: never edit them
 db-new-migration name:
-    sqlx migrate add --sequential {{name}}
-
-# Regenerates the committed .sqlx/ offline query metadata (needs sqlx-cli). Run after changing queries or migrations
-db-prepare:
-    rm -f target/sqlx-prepare.sqlite3
-    DATABASE_URL=sqlite://target/sqlx-prepare.sqlite3 sqlx database create
-    DATABASE_URL=sqlite://target/sqlx-prepare.sqlite3 sqlx migrate run
-    DATABASE_URL=sqlite://target/sqlx-prepare.sqlite3 cargo sqlx prepare -- --all-targets
+    #!/usr/bin/env sh
+    set -eu
+    last=$(ls toasty/migrations | sed -n 's/^\([0-9]*\)_.*\.sql$/\1/p' | sort -n | tail -1 | sed 's/^0*//')
+    id=$(( ${last:-0} + 1 ))
+    file=$(printf '%04d_%s.sql' "$id" "{{name}}")
+    printf -- '-- Applied migrations are append-only: never edit this file once released.\n-- Separate statements with `toasty::breakpoint` comment lines, as 0001_init.sql does.\n\n' > "toasty/migrations/$file"
+    printf '\n[[migrations]]\nid = %d\nname = "%s"\nsnapshot_name = "%04d_snapshot.toml"\n' "$id" "$file" "$id" >> toasty/history.toml
+    echo "created toasty/migrations/$file"
